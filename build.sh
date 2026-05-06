@@ -95,7 +95,7 @@ install_module() {
 
     log_info "Installing ${so_file} to ${FREESWITCH_MOD_DIR}..."
     cp "${so_file}" "${FREESWITCH_MOD_DIR}/"
-    chown freeswitch:freeswitch "${FREESWITCH_MOD_DIR}/mod_audio_fork.so"
+    # chown freeswitch:freeswitch "${FREESWITCH_MOD_DIR}/mod_audio_fork.so"
     log_info "Module installed successfully."
 }
 
