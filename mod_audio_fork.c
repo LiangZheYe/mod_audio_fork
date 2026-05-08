@@ -37,6 +37,11 @@ static switch_bool_t capture_callback(switch_media_bug_t *bug, void *user_data, 
 
 	case SWITCH_ABC_TYPE_CLOSE:
 		{
+			/* BUG-22 fix: check tech_pvt before dereferencing */
+			if (!tech_pvt) {
+				switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "Got SWITCH_ABC_TYPE_CLOSE but tech_pvt is NULL\n");
+				break;
+			}
 			switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO, "Got SWITCH_ABC_TYPE_CLOSE for bug %s\n", tech_pvt->bugname);
       fork_session_cleanup(session, tech_pvt->bugname, NULL, 1);
 		}
@@ -111,7 +116,10 @@ static switch_status_t start_capture(switch_core_session_t *session,
 	switch_channel_set_private(channel, bugname, bug);
 
 	if (fork_session_connect(&pUserData) != SWITCH_STATUS_SUCCESS) {
+		/* BUG-08 fix: clean up bug and resources when connect fails */
 		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "Error mod_audio_fork session cannot connect.\n");
+		switch_channel_set_private(channel, bugname, NULL);
+		switch_core_media_bug_remove(session, &bug);
 		return SWITCH_STATUS_FALSE;
 	}
 

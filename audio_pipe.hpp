@@ -4,6 +4,7 @@
 #include <string>
 #include <list>
 #include <mutex>
+#include <atomic>
 #include <queue>
 #include <unordered_map>
 #include <thread>
@@ -49,7 +50,7 @@ namespace drachtio {
       int bidirectional_audio, notifyHandler_t callback);
     ~AudioPipe();  
 
-    LwsState_t getLwsState(void) { return m_state; }
+    LwsState_t getLwsState(void) { return m_state.load(); } // BUG-20 fix: m_state is now atomic
     void connect(void);
     void bufferForSending(const char* text);
     size_t binarySpaceAvailable(void) {
@@ -124,7 +125,7 @@ namespace drachtio {
     
     bool connect_client(struct lws_per_vhost_data *vhd);
 
-    LwsState_t m_state;
+    std::atomic<LwsState_t> m_state; // BUG-20 fix: use atomic to prevent data race across threads
     std::string m_uuid;
     std::string m_host;
     std::string m_bugname;

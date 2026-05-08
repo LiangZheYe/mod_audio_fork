@@ -71,10 +71,13 @@ void vector_change_sln_volume_granular(int16_t* data, uint32_t samples, int32_t 
 		0.008913, 0.007943, 0.007079, 0.006310, 0.005623, 0.005012, 0.004467, 0.003981, 0.003548, 0.000000  // NOTE mapped -50 dB ratio to total silence instead of 0.003162
   };
   const float* chart;
-  uint32_t i = abs(vol) - 1;
 
   if (vol == 0) return;
   normalize_volume_granular(vol);
+
+  // BUG-03 fix: compute index after normalization and add bounds check
+  uint32_t i = abs(vol) - 1;
+  if (i >= GRANULAR_VOLUME_MAX) return;
 
   chart = vol > 0 ? pos : neg;
 
@@ -183,7 +186,6 @@ void vector_change_sln_volume_granular(int16_t* data, uint32_t samples, int32_t 
 		0.008913, 0.007943, 0.007079, 0.006310, 0.005623, 0.005012, 0.004467, 0.003981, 0.003548, 0.000000  // NOTE mapped -50 dB ratio to total silence instead of 0.003162
   };
   const float* chart;
-  uint32_t i;
 
   if (vol == 0) return;
 
@@ -191,8 +193,9 @@ void vector_change_sln_volume_granular(int16_t* data, uint32_t samples, int32_t 
 
   chart = vol > 0 ? pos : neg;
 
-  i = abs(vol) - 1;
-  assert(i < GRANULAR_VOLUME_MAX);
+  // BUG-03 fix: compute index after normalization and use bounds check instead of assert
+  uint32_t i = abs(vol) - 1;
+  if (i >= GRANULAR_VOLUME_MAX) return;
   newrate = chart[i];
   if (newrate) {
     int32_t tmp;

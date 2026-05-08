@@ -1,8 +1,8 @@
 #include "audio_pipe.hpp"
 #include <switch.h>
 
-#include <cassert>
 #include <iostream>
+#include <vector>
 
 /* discard incoming text messages over the socket that are longer than this */
 #define MAX_RECV_BUF_SIZE (65 * 1024 * 10)
@@ -23,7 +23,7 @@ static int dch_lws_http_basic_auth_gen(const char *user, const char *pw, char *b
 	size_t n = strlen(user), m = strlen(pw);
 	char b[128];
 
-	if (len < 6 + ((4 * (n + m + 1)) / 3) + 1)
+	if (len < 6 + ((4 * (n + m + 1) + 2) / 3) + 1) // BUG-06 fix: use ceiling division to prevent buffer overflow
 		return 1;
 
 	memcpy(buf, "Basic ", 6);
@@ -88,6 +88,7 @@ int AudioPipe::lws_callback(struct lws *wsi,
         if (ap) {
           ap->m_state = LWS_CLIENT_FAILED;
           ap->m_callback(ap->m_uuid.c_str(), ap->m_bugname.c_str(), AudioPipe::CONNECT_FAIL, (char *) in, NULL, len);
+          delete ap; // BUG-05 fix: free AudioPipe on connection failure to prevent memory leak
         }
         else {
           switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR,"AudioPipe::lws_service_thread LWS_CALLBACK_CLIENT_CONNECTION_ERROR unable to find wsi %p..\n", wsi); 
@@ -105,7 +106,7 @@ int AudioPipe::lws_callback(struct lws *wsi,
           ap->m_callback(ap->m_uuid.c_str(), ap->m_bugname.c_str(), AudioPipe::CONNECT_SUCCESS, NULL, NULL, len);
         }
         else {
-          switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR,"AudioPipe::lws_service_thread LWS_CALLBACK_CLIENT_ESTABLISHED %s unable to find wsi %p..\n", ap->m_uuid.c_str(), wsi); 
+          switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR,"AudioPipe::lws_service_thread LWS_CALLBACK_CLIENT_ESTABLISHED unable to find wsi %p..\n", wsi); // BUG-01 fix: ap is NULL here
         }
       }      
       break;
@@ -113,7 +114,7 @@ int AudioPipe::lws_callback(struct lws *wsi,
       {
         AudioPipe* ap = *ppAp;
         if (!ap) {
-          switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR,"AudioPipe::lws_service_thread LWS_CALLBACK_CLIENT_CLOSED %s unable to find wsi %p..\n", ap->m_uuid.c_str(), wsi); 
+          switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR,"AudioPipe::lws_service_thread LWS_CALLBACK_CLIENT_CLOSED unable to find wsi %p..\n", wsi); // BUG-01 fix: ap is NULL here
           return 0;
         }
         if (ap->m_state == LWS_CLIENT_DISCONNECTING) {
@@ -140,7 +141,7 @@ int AudioPipe::lws_callback(struct lws *wsi,
         
         AudioPipe* ap = *ppAp;
         if (!ap) {
-          switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR,"AudioPipe::lws_service_thread LWS_CALLBACK_CLIENT_RECEIVE %s unable to find wsi %p..\n", ap->m_uuid.c_str(), wsi); 
+          switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR,"AudioPipe::lws_service_thread LWS_CALLBACK_CLIENT_RECEIVE unable to find wsi %p..\n", wsi); // BUG-01 fix: ap is NULL here
           return 0;
         }
         
@@ -162,7 +163,12 @@ int AudioPipe::lws_callback(struct lws *wsi,
         else {
           if (lws_is_first_fragment(wsi)) {
             // allocate a buffer for the entire chunk of memory needed
-            assert(nullptr == ap->m_recv_buf);
+            // BUG-16 fix: replace assert with runtime check to protect production builds
+            if (nullptr != ap->m_recv_buf) {
+              switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "recv_buf leak detected, freeing\n");
+              free(ap->m_recv_buf);
+              ap->m_recv_buf = nullptr;
+            }
             ap->m_recv_buf_len = len + lws_remaining_packet_payload(wsi);
             ap->m_recv_buf = (uint8_t*) malloc(ap->m_recv_buf_len);
             ap->m_recv_buf_ptr = ap->m_recv_buf;
@@ -211,7 +217,7 @@ int AudioPipe::lws_callback(struct lws *wsi,
       {
         AudioPipe* ap = *ppAp;
         if (!ap) {
-          switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR,"AudioPipe::lws_service_thread LWS_CALLBACK_CLIENT_WRITEABLE %s unable to find wsi %p..\n", ap->m_uuid.c_str(), wsi); 
+          switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR,"AudioPipe::lws_service_thread LWS_CALLBACK_CLIENT_WRITEABLE unable to find wsi %p..\n", wsi); // BUG-01 fix: ap is NULL here
           return 0;
         }
 
@@ -228,10 +234,11 @@ int AudioPipe::lws_callback(struct lws *wsi,
           std::lock_guard<std::mutex> lk(ap->m_text_mutex);
           if (!ap->m_metadata_list.empty()) {
             const std::string& message = ap->m_metadata_list.front();
-            uint8_t buf[message.length() + LWS_PRE];
-            memcpy(buf + LWS_PRE, message.c_str(), message.length());
+            // BUG-07 fix: replace VLA with std::vector to avoid stack overflow on large messages
+            std::vector<uint8_t> buf(message.length() + LWS_PRE);
+            memcpy(buf.data() + LWS_PRE, message.c_str(), message.length());
             int n = message.length();
-            int m = lws_write(wsi, buf + LWS_PRE, n, LWS_WRITE_TEXT);
+            int m = lws_write(wsi, buf.data() + LWS_PRE, n, LWS_WRITE_TEXT);
 
             if (m < n) {
               return -1; // Failed to send the full message
@@ -392,21 +399,22 @@ void AudioPipe::addPendingConnect(AudioPipe* ap) {
   lws_cancel_service(context);
 }
 void AudioPipe::addPendingDisconnect(AudioPipe* ap) {
-  ap->m_state = LWS_CLIENT_DISCONNECTING;
+  // BUG-20 fix: move m_state write inside the lock to prevent data race with LWS thread reads
   {
     std::lock_guard<std::mutex> guard(mutex_disconnects);
+    ap->m_state = LWS_CLIENT_DISCONNECTING;
     pendingDisconnects.push_back(ap);
-    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG,"%s after adding disconnect there are %lu pending disconnects\n", 
+    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG,"%s after adding disconnect there are %lu pending disconnects\n",
       ap->m_uuid.c_str(), pendingDisconnects.size());
   }
-  lws_cancel_service(ap->m_vhd->context);
+  lws_cancel_service(context); // BUG-21 fix: use global context instead of ap->m_vhd->context which may be null
 }
 void AudioPipe::addPendingWrite(AudioPipe* ap) {
   {
     std::lock_guard<std::mutex> guard(mutex_writes);
     pendingWrites.push_back(ap);
   }
-  lws_cancel_service(ap->m_vhd->context);
+  lws_cancel_service(context); // BUG-21 fix: use global context instead of ap->m_vhd->context which may be null
 }
 
 bool AudioPipe::lws_service_thread() {
@@ -504,8 +512,15 @@ void AudioPipe::connect(void) {
 }
 
 bool AudioPipe::connect_client(struct lws_per_vhost_data *vhd) {
-  assert(m_audio_buffer != nullptr);
-  assert(m_vhd == nullptr);
+  // BUG-16 fix: replace assert with runtime check to protect production builds
+  if (!m_audio_buffer) {
+    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "connect_client: m_audio_buffer is null\n");
+    return false;
+  }
+  if (m_vhd != nullptr) {
+    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "connect_client: m_vhd is already set\n");
+    return false;
+  }
 
   struct lws_client_connect_info i;
 
