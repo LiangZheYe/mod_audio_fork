@@ -201,8 +201,9 @@ int AudioPipe::lws_callback(struct lws *wsi,
             }
             if (lws_is_final_fragment(wsi)) {
               if (nullptr != ap->m_recv_buf) {
-                std::string msg((char *)ap->m_recv_buf, ap->m_recv_buf_ptr - ap->m_recv_buf);
-                ap->m_callback(ap->m_uuid.c_str(), ap->m_bugname.c_str(), AudioPipe::MESSAGE, msg.c_str(), NULL, len);
+                size_t total_len = ap->m_recv_buf_ptr - ap->m_recv_buf;
+                std::string msg((char *)ap->m_recv_buf, total_len);
+                ap->m_callback(ap->m_uuid.c_str(), ap->m_bugname.c_str(), AudioPipe::MESSAGE, msg.c_str(), NULL, total_len);
                 if (nullptr != ap->m_recv_buf) free(ap->m_recv_buf);
               }
               ap->m_recv_buf = ap->m_recv_buf_ptr = nullptr;
