@@ -9,6 +9,7 @@
 #include <functional>
 #include <cassert>
 #include <cstdlib>
+#include <new>
 #include <fstream>
 #include <sstream>
 #include <regex>
@@ -309,56 +310,44 @@ namespace {
           pVecMarksInUse->clear();
         }
       }
+      // BUG-13 fix: check jsonData is not NULL before calling cJSON_PrintUnformatted
       else if (0 == type.compare("transcription")) {
-        char* jsonString = cJSON_PrintUnformatted(jsonData);
-        tech_pvt->responseHandler(session, EVENT_TRANSCRIPTION, jsonString);
-        free(jsonString);        
+        if (jsonData) {
+          char* jsonString = cJSON_PrintUnformatted(jsonData);
+          tech_pvt->responseHandler(session, EVENT_TRANSCRIPTION, jsonString);
+          free(jsonString);
+        }
       }
+      // BUG-13 fix: check jsonData is not NULL before calling cJSON_PrintUnformatted
       else if (0 == type.compare("transfer")) {
-        char* jsonString = cJSON_PrintUnformatted(jsonData);
-        tech_pvt->responseHandler(session, EVENT_TRANSFER, jsonString);
-        free(jsonString);                
+        if (jsonData) {
+          char* jsonString = cJSON_PrintUnformatted(jsonData);
+          tech_pvt->responseHandler(session, EVENT_TRANSFER, jsonString);
+          free(jsonString);
+        }
       }
+      // BUG-13 fix: check jsonData is not NULL before calling cJSON_PrintUnformatted
       else if (0 == type.compare("disconnect")) {
-        char* jsonString = cJSON_PrintUnformatted(jsonData);
-        tech_pvt->responseHandler(session, EVENT_DISCONNECT, jsonString);
-        free(jsonString);        
+        if (jsonData) {
+          char* jsonString = cJSON_PrintUnformatted(jsonData);
+          tech_pvt->responseHandler(session, EVENT_DISCONNECT, jsonString);
+          free(jsonString);
+        }
       }
+      // BUG-13 fix: check jsonData is not NULL before calling cJSON_PrintUnformatted
       else if (0 == type.compare("error")) {
-        char* jsonString = cJSON_PrintUnformatted(jsonData);
-        tech_pvt->responseHandler(session, EVENT_ERROR, jsonString);
-        free(jsonString);        
+        if (jsonData) {
+          char* jsonString = cJSON_PrintUnformatted(jsonData);
+          tech_pvt->responseHandler(session, EVENT_ERROR, jsonString);
+          free(jsonString);
+        }
       }
       else if (0 == type.compare("json")) {
         char* jsonString = cJSON_PrintUnformatted(json);
         tech_pvt->responseHandler(session, EVENT_JSON, jsonString);
         free(jsonString);
       }
-      else if (0 == type.compare("transcription")) {
-        char* jsonString = cJSON_PrintUnformatted(jsonData);
-        tech_pvt->responseHandler(session, EVENT_TRANSCRIPTION, jsonString);
-        free(jsonString);        
-      }
-      else if (0 == type.compare("transfer")) {
-        char* jsonString = cJSON_PrintUnformatted(jsonData);
-        tech_pvt->responseHandler(session, EVENT_TRANSFER, jsonString);
-        free(jsonString);                
-      }
-      else if (0 == type.compare("disconnect")) {
-        char* jsonString = cJSON_PrintUnformatted(jsonData);
-        tech_pvt->responseHandler(session, EVENT_DISCONNECT, jsonString);
-        free(jsonString);        
-      }
-      else if (0 == type.compare("error")) {
-        char* jsonString = cJSON_PrintUnformatted(jsonData);
-        tech_pvt->responseHandler(session, EVENT_ERROR, jsonString);
-        free(jsonString);        
-      }
-      else if (0 == type.compare("json")) {
-        char* jsonString = cJSON_PrintUnformatted(json);
-        tech_pvt->responseHandler(session, EVENT_JSON, jsonString);
-        free(jsonString);
-      }
+      // BUG-11 fix: removed duplicate code block (dead code - never reached due to if-else chain)
       else {
         switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "(%u) processIncomingMessage - unsupported msg type %s\n", tech_pvt->id, type.c_str());  
       }
@@ -474,7 +463,9 @@ namespace {
     tech_pvt->pVecMarksInUse = nullptr;
     tech_pvt->pVecMarksCleared = nullptr;
 
+    // BUG-12 fix: ensure null termination after strncpy
     strncpy(tech_pvt->bugname, bugname, MAX_BUG_LEN);
+    tech_pvt->bugname[MAX_BUG_LEN] = '\0';
     if (metadata) {
       strncpy(tech_pvt->initialMetadata, metadata, MAX_METADATA_LEN - 1);
       tech_pvt->initialMetadata[MAX_METADATA_LEN - 1] = '\0';
@@ -482,7 +473,8 @@ namespace {
     
     size_t buflen = LWS_PRE + (FRAME_SIZE_8000 * desiredSampling / 8000 * channels * 1000 / RTP_PACKETIZATION_PERIOD * nAudioBufferSecs);
 
-    drachtio::AudioPipe* ap = new drachtio::AudioPipe(tech_pvt->sessionId, host, port, path, sslFlags, 
+    // BUG-15 fix: use nothrow new so that allocation failure returns nullptr instead of throwing
+    drachtio::AudioPipe* ap = new (std::nothrow) drachtio::AudioPipe(tech_pvt->sessionId, host, port, path, sslFlags, 
       buflen, read_impl.decoded_bytes_per_packet, username, password, bugname, bidirectional_audio_stream_enable, eventCallback);
     if (!ap) {
       switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "Error allocating AudioPipe\n");
@@ -645,12 +637,16 @@ extern "C" {
         switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "parse_ws_uri - %d: %s\n", i, matches[i].str().c_str());
       }
       */
-      strncpy(host, matches[1].str().c_str(), MAX_WS_URL_LEN);
+      // BUG-12 fix: use MAX_WS_URL_LEN - 1 and ensure null termination
+      strncpy(host, matches[1].str().c_str(), MAX_WS_URL_LEN - 1);
+      host[MAX_WS_URL_LEN - 1] = '\0';
       if (matches[2].str().length() > 0) {
         *pPort = atoi(matches[2].str().c_str());
       }
       if (matches[3].str().length() > 0) {
-        strncpy(path, matches[3].str().c_str(), MAX_PATH_LEN);
+        // BUG-12 fix: use MAX_PATH_LEN - 1 and ensure null termination
+        strncpy(path, matches[3].str().c_str(), MAX_PATH_LEN - 1);
+        path[MAX_PATH_LEN - 1] = '\0';
       }
       else {
         strcpy(path, "/");
