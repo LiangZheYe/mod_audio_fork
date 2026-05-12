@@ -773,8 +773,12 @@ extern "C" {
     }
 
     if (pAudioPipe && text) pAudioPipe->bufferForSending(text);
-    if (pAudioPipe) pAudioPipe->close();
+    if (pAudioPipe) {
+      pAudioPipe->close();
+      tech_pvt->pAudioPipe = nullptr;
+    }
 
+    switch_mutex_unlock(tech_pvt->mutex);
     destroy_tech_pvt(tech_pvt);
     switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO, "(%u) fork_session_cleanup: connection closed\n", id);
     return SWITCH_STATUS_SUCCESS;
@@ -1034,6 +1038,8 @@ switch_bool_t dub_speech_frame(switch_media_bug_t *bug, private_t* tech_pvt) {
       return SWITCH_STATUS_FALSE;
     }
     private_t* tech_pvt = (private_t*) switch_core_media_bug_get_user_data(bug);
+
+    if (!tech_pvt) return SWITCH_STATUS_FALSE;
 
     CircularBuffer_t *cBuffer = (CircularBuffer_t *) tech_pvt->streamingPlayoutBuffer;
 
