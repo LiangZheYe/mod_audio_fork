@@ -774,8 +774,12 @@ extern "C" {
 
     if (pAudioPipe && text) pAudioPipe->bufferForSending(text);
     if (pAudioPipe) {
-      pAudioPipe->close();
-      tech_pvt->pAudioPipe = nullptr;
+      // BUG-35 fix: close() returns true when LWS thread will handle AudioPipe cleanup
+      // (CONNECTED/CONNECTING states), false when caller should delete (IDLE state)
+      bool lwsCleanup = pAudioPipe->close();
+      if (lwsCleanup) {
+        tech_pvt->pAudioPipe = nullptr;
+      }
     }
 
     switch_mutex_unlock(tech_pvt->mutex);

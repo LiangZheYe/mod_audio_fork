@@ -102,8 +102,15 @@ int AudioPipe::lws_callback(struct lws *wsi,
         if (ap) {
           *ppAp = ap;
           ap->m_vhd = vhd;
-          ap->m_state = LWS_CLIENT_CONNECTED;
-          ap->m_callback(ap->m_uuid.c_str(), ap->m_bugname.c_str(), AudioPipe::CONNECT_SUCCESS, NULL, NULL, len);
+          // BUG-35 fix: only set CONNECTED if state is still CONNECTING
+          // (close() may have already set DISCONNECTING)
+          LwsState_t expected = LWS_CLIENT_CONNECTING;
+          if (ap->m_state.compare_exchange_strong(expected, LWS_CLIENT_CONNECTED)) {
+            ap->m_callback(ap->m_uuid.c_str(), ap->m_bugname.c_str(), AudioPipe::CONNECT_SUCCESS, NULL, NULL, len);
+          } else {
+            // close() was called while connecting - close the connection immediately
+            lws_callback_on_writable(wsi);
+          }
         }
         else {
           switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR,"AudioPipe::lws_service_thread LWS_CALLBACK_CLIENT_ESTABLISHED unable to find wsi %p..\n", wsi); // BUG-01 fix: ap is NULL here
@@ -390,6 +397,11 @@ AudioPipe* AudioPipe::findPendingConnect(struct lws *wsi) {
   return ap;
 }
 
+void AudioPipe::removePendingConnect(AudioPipe* ap) {
+  std::lock_guard<std::mutex> guard(mutex_connects);
+  pendingConnects.remove(ap);
+}
+
 void AudioPipe::addPendingConnect(AudioPipe* ap) {
   {
     std::lock_guard<std::mutex> guard(mutex_connects);
@@ -536,7 +548,6 @@ bool AudioPipe::connect_client(struct lws_per_vhost_data *vhd) {
   i.protocol = protocolName.c_str();
   i.pwsi = &(m_wsi);
 
-  m_state = LWS_CLIENT_CONNECTING;
   m_vhd = vhd;
 
   m_wsi = lws_client_connect_via_info(&i);
@@ -559,9 +570,20 @@ void AudioPipe::unlockAudioBuffer() {
   m_audio_mutex.unlock();
 }
 
-void AudioPipe::close() {
-  if (m_state != LWS_CLIENT_CONNECTED) return;
-  addPendingDisconnect(this);
+bool AudioPipe::close() {
+  LwsState_t state = m_state.load();
+  if (state == LWS_CLIENT_CONNECTED || state == LWS_CLIENT_CONNECTING) {
+    // LWS thread will handle cleanup after close
+    addPendingDisconnect(this);
+    return true;
+  }
+  if (state == LWS_CLIENT_IDLE) {
+    // Connection not yet attempted - remove from pending list
+    removePendingConnect(this);
+    m_state = LWS_CLIENT_FAILED;
+    return false;
+  }
+  return false;
 }
 
 void AudioPipe::do_graceful_shutdown() {

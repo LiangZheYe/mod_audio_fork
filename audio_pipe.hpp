@@ -90,7 +90,7 @@ namespace drachtio {
       return m_bidirectional_audio_stream;
     }
 
-    void close() ;
+    bool close() ;
 
     // no default constructor or copying
     AudioPipe() = delete;
@@ -119,6 +119,7 @@ namespace drachtio {
     static void addPendingConnect(AudioPipe* ap);
     static void addPendingDisconnect(AudioPipe* ap);
     static void addPendingWrite(AudioPipe* ap);
+    static void removePendingConnect(AudioPipe* ap);
     static void processPendingConnects(lws_per_vhost_data *vhd);
     static void processPendingDisconnects(lws_per_vhost_data *vhd);
     static void processPendingWrites(void);
