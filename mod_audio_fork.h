@@ -1,10 +1,9 @@
 #ifndef __MOD_FORK_H__
 #define __MOD_FORK_H__
 
-#include <switch.h>
 #include <libwebsockets.h>
 #include <speex/speex_resampler.h>
-
+#include <switch.h>
 #include <unistd.h>
 
 #define MY_BUG_NAME "audio_fork"
@@ -13,18 +12,19 @@
 #define MAX_WS_URL_LEN (512)
 #define MAX_PATH_LEN (4096)
 
-#define EVENT_DISCONNECT      "mod_audio_fork::disconnect"
-#define EVENT_ERROR           "mod_audio_fork::error"
+#define EVENT_DISCONNECT "mod_audio_fork::disconnect"
+#define EVENT_ERROR "mod_audio_fork::error"
 #define EVENT_CONNECT_SUCCESS "mod_audio_fork::connect"
-#define EVENT_CONNECT_FAIL    "mod_audio_fork::connect_failed"
-#define EVENT_BUFFER_OVERRUN  "mod_audio_fork::buffer_overrun"
+#define EVENT_CONNECT_FAIL "mod_audio_fork::connect_failed"
+#define EVENT_BUFFER_OVERRUN "mod_audio_fork::buffer_overrun"
 
-typedef void (*responseHandler_t)(switch_core_session_t* session, const char* eventName, char* json);
+typedef void (*responseHandler_t)(switch_core_session_t *session,
+                                  const char *eventName, char *json);
 
 struct private_data {
-	switch_mutex_t *mutex;
-	char sessionId[MAX_SESSION_ID];
-  char bugname[MAX_BUG_LEN+1];
+  switch_mutex_t *mutex;
+  char sessionId[MAX_SESSION_ID];
+  char bugname[MAX_BUG_LEN + 1];
   SpeexResamplerState *resampler;
   responseHandler_t responseHandler;
   void *pAudioPipe;
@@ -33,11 +33,11 @@ struct private_data {
   unsigned int port;
   char path[MAX_PATH_LEN];
   int sampling;
-  int  channels;
+  int channels;
   unsigned int id;
-  int buffer_overrun_notified:1;
-  int audio_paused:1;
-  int graceful_shutdown:1;
+  int buffer_overrun_notified : 1;
+  int audio_paused : 1;
+  int graceful_shutdown : 1;
 
   // bidirectional audio
   void *streamingPlayoutBuffer;
@@ -48,7 +48,7 @@ struct private_data {
   int downscale_factor;
   SpeexResamplerState *bidirectional_audio_resampler;
   int bidirectional_audio_enable;
-	int bidirectional_audio_stream;
+  int bidirectional_audio_stream;
   int bidirectional_audio_sample_rate;
 
   switch_codec_t raw_write_codec;
