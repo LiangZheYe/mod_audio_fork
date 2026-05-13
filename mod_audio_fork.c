@@ -43,7 +43,7 @@ static switch_bool_t capture_callback(switch_media_bug_t *bug, void *user_data, 
 				break;
 			}
 			switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO, "Got SWITCH_ABC_TYPE_CLOSE for bug %s\n", tech_pvt->bugname);
-      fork_session_cleanup(session, tech_pvt->bugname, NULL, 1);
+      fork_session_cleanup(session, tech_pvt->bugname, 1);
 		}
 		break;
 	
@@ -63,18 +63,17 @@ static switch_bool_t capture_callback(switch_media_bug_t *bug, void *user_data, 
 	return ret;
 }
 
-static switch_status_t start_capture(switch_core_session_t *session, 
-	switch_media_bug_flag_t flags, 
+static switch_status_t start_capture(switch_core_session_t *session,
+	switch_media_bug_flag_t flags,
 	char* host,
-	unsigned int port, 
+	unsigned int port,
 	char* path,
 	int sampling,
 	int sslFlags,
 	int bidirectional_audio_enable,
 	int bidirectional_audio_stream,
 	int bidirectional_audio_sample_rate,
-	char* bugname, 
-	char* metadata)
+	char* bugname)
 {
 	switch_channel_t *channel = switch_core_session_get_channel(session);
 	switch_media_bug_t *bug;
@@ -101,8 +100,8 @@ static switch_status_t start_capture(switch_core_session_t *session,
 	}
 
 	switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "calling fork_session_init.\n");
-	if (SWITCH_STATUS_FALSE == fork_session_init(session, responseHandler, read_codec->implementation->actual_samples_per_second, 
-		host, port, path, sampling, sslFlags, channels, bugname, metadata, bidirectional_audio_enable, bidirectional_audio_stream,
+	if (SWITCH_STATUS_FALSE == fork_session_init(session, responseHandler, read_codec->implementation->actual_samples_per_second,
+		host, port, path, sampling, sslFlags, channels, bugname, bidirectional_audio_enable, bidirectional_audio_stream,
 		bidirectional_audio_sample_rate, &pUserData)) {
 		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "Error initializing mod_audio_fork session.\n");
 		return SWITCH_STATUS_FALSE;
@@ -127,17 +126,12 @@ static switch_status_t start_capture(switch_core_session_t *session,
 	return SWITCH_STATUS_SUCCESS;
 }
 
-static switch_status_t do_stop(switch_core_session_t *session, char* bugname, char* text)
+static switch_status_t do_stop(switch_core_session_t *session, char* bugname)
 {
 	switch_status_t status = SWITCH_STATUS_SUCCESS;
 
-	if (text) {
-		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO, "mod_audio_fork (%s): stop w/ final text %s\n", bugname, text);
-	}
-	else {
-		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO, "mod_audio_fork (%s): stop\n", bugname);
-	}
-	status = fork_session_cleanup(session, bugname, text, 0);
+	switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO, "mod_audio_fork (%s): stop\n", bugname);
+	status = fork_session_cleanup(session, bugname, 0);
 
 	return status;
 }
@@ -172,23 +166,7 @@ static switch_status_t do_graceful_shutdown(switch_core_session_t *session, char
 	return status;
 }
 
-static switch_status_t send_text(switch_core_session_t *session, char* bugname, char* text) {
-	switch_status_t status = SWITCH_STATUS_FALSE;
-
-	switch_channel_t *channel = switch_core_session_get_channel(session);
-	switch_media_bug_t *bug = switch_channel_get_private(channel, bugname);
-
-  if (bug) {
-		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO, "mod_audio_fork (%s): sending text: %s.\n", bugname, text);
-    status = fork_session_send_text(session, bugname, text);
-  }
-  else {
-		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "mod_audio_fork (%s): no bug, failed sending text: %s.\n", bugname, text);
-  }
-  return status;
-}
-
-#define FORK_API_SYNTAX "<uuid> [start | stop | send_text | pause | resume | graceful-shutdown | stop_play ] [wss-url | path] [mono | mixed | stereo] [8000 | 16000 | 24000 | 32000 | 64000] [bugname] [metadata] [bidirectionalAudio_enabled] [bidirectionalAudio_stream_enabled] [bidirectionalAudio_stream_samplerate]"
+#define FORK_API_SYNTAX "<uuid> [start | stop | pause | resume | graceful-shutdown | stop_play ] [wss-url | path] [mono | mixed | stereo] [8000 | 16000 | 24000 | 32000 | 64000] [bugname] [bidirectionalAudio_enabled] [bidirectionalAudio_stream_enabled] [bidirectionalAudio_stream_samplerate]"
 SWITCH_STANDARD_API(fork_function)
 {
 	char *mycmd = NULL, *argv[10] = { 0 };
@@ -215,17 +193,9 @@ SWITCH_STANDARD_API(fork_function)
 
 		if ((lsession = switch_core_session_locate(argv[0]))) {
 			if (!strcasecmp(argv[1], "stop")) {
-        char * text = NULL;
-        if (argc > 3) {
-          bugname = argv[2];
-          text = argv[3];
-        }
-        else if (argc > 2) {
-          if (argv[2][0] == '{' || argv[2][0] == '[') text = argv[2];
-          else bugname = argv[2];
-        }
-				status = do_stop(lsession, bugname, text);
-      }
+	        if (argc > 2) bugname = argv[2];
+				status = do_stop(lsession, bugname);
+	      }
 			else if (!strcasecmp(argv[1], "stop_play")) {
 				status = stop_play(lsession, bugname);
 			}
@@ -241,23 +211,6 @@ SWITCH_STANDARD_API(fork_function)
         if (argc > 2) bugname = argv[2];
 				status = do_graceful_shutdown(lsession, bugname);
       }
-      else if (!strcasecmp(argv[1], "send_text")) {
-        char * text = 0;
-        if (argc < 3) {
-          switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "send_text requires an argument specifying text to send\n");
-          switch_core_session_rwunlock(lsession);
-          goto done;
-        }
-        if (argc > 3) {
-          bugname = argv[2];
-          text = argv[3];
-        }
-        else {
-          if (argv[2][0] == '{' || argv[2][0] == '[') text = argv[2];
-          else bugname = argv[2];
-        }
-        status = send_text(lsession, bugname, text);
-      }
       else if (!strcasecmp(argv[1], "start")) {
 				switch_channel_t *channel = switch_core_session_get_channel(lsession);
         char host[MAX_WS_URL_LEN], path[MAX_PATH_LEN];
@@ -266,33 +219,23 @@ SWITCH_STANDARD_API(fork_function)
 				
         int sampling = 8000;
       	switch_media_bug_flag_t flags = SMBF_READ_STREAM;
-        char *metadata = NULL;
 				int bidirectional_audio_enable = 1;
 				int bidirectional_audio_stream = 0;
 				int bidirectional_audio_sample_rate = 0;
-				// Expecting that bidirectional audio params is always received together with bugname and metadata even they are empty string
-				if (argc > 9) {
-					if (argv[5][0] != '\0') {
-						bugname = argv[5];
-					}
-					if (argv[6][0] != '\0') {
-						metadata = argv[6];
-					}
-					bidirectional_audio_enable = !strcmp(argv[7], "true") ? 1 : 0;
-					bidirectional_audio_stream = !strcmp(argv[8], "true") ? 1 : 0;
-					bidirectional_audio_sample_rate = atoi(argv[9]);
+					if (argc > 8) {
+						if (argv[5][0] != '\0') {
+							bugname = argv[5];
+						}
+						bidirectional_audio_enable = !strcmp(argv[6], "true") ? 1 : 0;
+						bidirectional_audio_stream = !strcmp(argv[7], "true") ? 1 : 0;
+						bidirectional_audio_sample_rate = atoi(argv[8]);
 
-					if (bidirectional_audio_enable) {
-						flags |= SMBF_WRITE_REPLACE ;
-					}
-				} else if( argc > 6 ) {
-          bugname = argv[5];
-          metadata = argv[6];
-        }
-        else if (argc > 5) {
-          if (argv[5][0] == '{' || argv[5][0] == '[') metadata = argv[5];
-          else bugname = argv[5];
-        }
+						if (bidirectional_audio_enable) {
+							flags |= SMBF_WRITE_REPLACE ;
+						}
+					} else if (argc > 5) {
+	          bugname = argv[5];
+	        }
 
         if (0 == strcmp(argv[3], "mixed")) {
           flags |= SMBF_WRITE_STREAM ;
@@ -322,7 +265,7 @@ SWITCH_STANDARD_API(fork_function)
           switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "invalid sample rate: %s\n", argv[4]);					
 				}
         status = start_capture(lsession, flags, host, port, path, sampling, sslFlags,
-					bidirectional_audio_enable, bidirectional_audio_stream, bidirectional_audio_sample_rate, bugname, metadata);
+					bidirectional_audio_enable, bidirectional_audio_stream, bidirectional_audio_sample_rate, bugname);
 			}
       else {
         switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "unsupported mod_audio_fork cmd: %s\n", argv[1]);
@@ -357,19 +300,13 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_audio_fork_load)
 	*module_interface = switch_loadable_module_create_module_interface(pool, modname);
 
 	/* create/register custom event message types */
-	if (switch_event_reserve_subclass(EVENT_TRANSCRIPTION) != SWITCH_STATUS_SUCCESS ||
-    switch_event_reserve_subclass(EVENT_TRANSFER) != SWITCH_STATUS_SUCCESS ||
-    switch_event_reserve_subclass(EVENT_PLAY_AUDIO) != SWITCH_STATUS_SUCCESS ||
-    switch_event_reserve_subclass(EVENT_KILL_AUDIO) != SWITCH_STATUS_SUCCESS ||
     switch_event_reserve_subclass(EVENT_ERROR) != SWITCH_STATUS_SUCCESS ||
     switch_event_reserve_subclass(EVENT_DISCONNECT) != SWITCH_STATUS_SUCCESS) {
-
-		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Couldn't register an event subclass for mod_audio_fork API.\n");
+	switch_console_set_complete("add uuid_audio_fork start wss-url");
 		return SWITCH_STATUS_TERM;
 	}
 
 	SWITCH_ADD_API(api_interface, "uuid_audio_fork", "audio_fork API", fork_function, FORK_API_SYNTAX);
-	switch_console_set_complete("add uuid_audio_fork start wss-url metadata");
 	switch_console_set_complete("add uuid_audio_fork start wss-url");
 	switch_console_set_complete("add uuid_audio_fork stop");
 
@@ -389,10 +326,6 @@ SWITCH_MODULE_SHUTDOWN_FUNCTION(mod_audio_fork_shutdown)
 {
 	fork_cleanup();
   //mod_running = 0;
-	switch_event_free_subclass(EVENT_TRANSCRIPTION);
-	switch_event_free_subclass(EVENT_TRANSFER);
-	switch_event_free_subclass(EVENT_PLAY_AUDIO);
-	switch_event_free_subclass(EVENT_KILL_AUDIO);
 	switch_event_free_subclass(EVENT_DISCONNECT);
 	switch_event_free_subclass(EVENT_ERROR);
 

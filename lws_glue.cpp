@@ -1,21 +1,14 @@
 #include <switch.h>
-#include <switch_json.h>
 #include <string.h>
 #include <string>
 #include <mutex>
 #include <thread>
-#include <list>
 #include <algorithm>
-#include <functional>
-#include <cassert>
 #include <cstdlib>
 #include <new>
-#include <fstream>
 #include <sstream>
 #include <regex>
 
-#include "base64.hpp"
-#include "parser.hpp"
 #include "mod_audio_fork.h"
 #include "audio_pipe.hpp"
 #include "vector_math.h"
@@ -28,8 +21,6 @@ typedef boost::circular_buffer<uint16_t> CircularBuffer_t;
 #define RTP_PACKETIZATION_PERIOD 20
 #define FRAME_SIZE_8000  320 /*which means each 20ms frame as 320 bytes at 8 khz (1 channel only)*/
 #define BUFFER_GROW_SIZE (16384)
-#define AUDIO_MARKER 0xFFFF
-#define MAX_MARKS (30)
 
 namespace {
   static const char *requestedBufferSecs = std::getenv("MOD_AUDIO_FORK_BUFFER_SECS");
@@ -39,15 +30,6 @@ namespace {
     std::getenv("MOD_AUDIO_FORK_SUBPROTOCOL_NAME") : "audio.drachtio.org";
   static unsigned int nServiceThreads __attribute__((unused)) = std::max(1, std::min(requestedNumServiceThreads ? ::atoi(requestedNumServiceThreads) : 1, 5));
   static unsigned int idxCallCount = 0;
-
-  static bool markCountExceeded(private_t* tech_pvt) {
-    if (nullptr != tech_pvt->pVecMarksInUse) {
-      std::deque<std::string>* pVecMarksInUse = static_cast<std::deque<std::string>*>(tech_pvt->pVecMarksInUse);
-      std::deque<std::string>* pVecMarksInInventory = static_cast<std::deque<std::string>*>(tech_pvt->pVecMarksInInventory);
-      return pVecMarksInUse->size()+ pVecMarksInInventory->size() >= MAX_MARKS;
-    }
-    return false;
-  }
 
   switch_status_t processIncomingBinary(private_t* tech_pvt, switch_core_session_t* /*session*/, const char* message, size_t dataLength) {
     std::vector<uint8_t> data;
@@ -76,28 +58,10 @@ namespace {
     // Access the prebuffer
     CircularBuffer_t* cBuffer = static_cast<CircularBuffer_t*>(tech_pvt->streamingPreBuffer);
 
-    int numMarkers = 0;
-    std::deque<std::string>* pVecMarksInInventory = nullptr;
-    std::deque<std::string>* pVecMarksInUse = nullptr;
-    if (nullptr != tech_pvt->pVecMarksInInventory) {
-      pVecMarksInInventory = static_cast<std::deque<std::string>*>(tech_pvt->pVecMarksInInventory);
-      pVecMarksInUse = static_cast<std::deque<std::string>*>(tech_pvt->pVecMarksInUse);
-      numMarkers = pVecMarksInInventory->size();
-
-      // move inventory to in-use
-      pVecMarksInUse->insert(pVecMarksInUse->end(), pVecMarksInInventory->begin(), pVecMarksInInventory->end());
-      pVecMarksInInventory->clear();
-    }
-  
     // Ensure the prebuffer has enough capacity
-    if (cBuffer->capacity() - cBuffer->size() < numSamples + numMarkers) {
-        size_t newCapacity = cBuffer->size() + std::max(numSamples + numMarkers, (size_t)BUFFER_GROW_SIZE);
+    if (cBuffer->capacity() - cBuffer->size() < numSamples) {
+        size_t newCapacity = cBuffer->size() + std::max(numSamples, (size_t)BUFFER_GROW_SIZE);
         cBuffer->set_capacity(newCapacity);
-    }
-
-    // prepend any markers
-    while (numMarkers-- > 0) {
-      cBuffer->push_back(AUDIO_MARKER);
     }
 
     // Append the data to the prebuffer
@@ -201,163 +165,6 @@ namespace {
     return SWITCH_STATUS_SUCCESS;
   }
 
-  void processIncomingMessage(private_t* tech_pvt, switch_core_session_t* session, const char* message) {
-    std::string msg = message;
-    std::string type;
-    cJSON* json = parse_json(session, msg, type) ;
-    if (json) {
-      switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "(%u) processIncomingMessage - received %s message %s\n", tech_pvt->id, type.c_str(), message);
-      cJSON* jsonData = cJSON_GetObjectItem(json, "data");
-      if (0 == type.compare("playAudio") &&
-        // playAudio is enabled and there is no bidirectional audio from stream is enabled.
-        tech_pvt->bidirectional_audio_enable &&
-        !tech_pvt->bidirectional_audio_stream) {
-        if (jsonData) {
-          cJSON* jsonAudio = cJSON_DetachItemFromObject(jsonData, "audioContent");
-          int validAudio = (jsonAudio && NULL != jsonAudio->valuestring);
-          const char* szAudioContentType = cJSON_GetObjectCstr(jsonData, "audioContentType");
-
-          if (!validAudio) {
-            switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "(%u) processIncomingMessage - missing audioContent in playAudio request\n", tech_pvt->id);
-          }
-          else if (0 != strcmp(szAudioContentType, "raw")) {
-            switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING, "(%u) processIncomingMessage - unsupported audioContentType: %s. Real-time streaming requires raw format.\n", tech_pvt->id, szAudioContentType);
-          }
-          else {
-            // Decode Base64
-            std::string rawAudio = drachtio::base64_decode(jsonAudio->valuestring);
-            size_t decodedLen = rawAudio.length();
-            uint8_t *data = (uint8_t *) rawAudio.data();
-
-            // Get Sample Rate (currently unused, but parsed for future use)
-            cJSON* jsonSR = cJSON_GetObjectItem(jsonData, "sampleRate");
-            (void)jsonSR;
-
-            // Access the buffer - Use blocking lock to ensure data integrity
-            if (nullptr != tech_pvt->mutex && switch_mutex_lock(tech_pvt->mutex) == SWITCH_STATUS_SUCCESS) {
-                CircularBuffer_t *playoutBuffer = (CircularBuffer_t *) tech_pvt->streamingPlayoutBuffer;
-                try {
-                    // Convert raw audio to int16_t vector
-                    const int16_t* pAudio = reinterpret_cast<const int16_t*>(data);
-                    size_t numSamples = decodedLen / sizeof(int16_t);
-
-                    // Resize the buffer if necessary
-                    if (playoutBuffer->capacity() - playoutBuffer->size() < numSamples) {
-                        size_t newCapacity = playoutBuffer->size() + std::max(numSamples, (size_t)BUFFER_GROW_SIZE);
-                        playoutBuffer->set_capacity(newCapacity);
-                    }
-                    // Push the data into the buffer.
-                    playoutBuffer->insert(playoutBuffer->end(), pAudio, pAudio + numSamples);
-
-                    // switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "(%u) Buffered %zu bytes of TTS audio. Buffer size: %zu\n", tech_pvt->id, decodedLen, playoutBuffer->size());
-
-                } catch (const std::exception& e) {
-                    switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "Error buffering TTS audio: %s\n", e.what());
-                } catch (...) {
-                    switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "Error buffering TTS audio\n");
-                }
-
-                switch_mutex_unlock(tech_pvt->mutex);
-            } else {
-                switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "(%u) Failed to lock mutex for buffering TTS\n", tech_pvt->id);
-            }
-          }
-          if (jsonAudio) cJSON_Delete(jsonAudio);
-        }
-        else {
-          switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "(%u) processIncomingMessage - missing data payload in playAudio request\n", tech_pvt->id); 
-        }
-      }
-      else if (0 == type.compare("killAudio")) {
-        tech_pvt->responseHandler(session, EVENT_KILL_AUDIO, NULL);
-
-        // kill any current playback on the channel
-        switch_channel_t *channel = switch_core_session_get_channel(session);
-        switch_channel_set_flag_value(channel, CF_BREAK, 2);
-
-        // this will dump buffered incoming audio
-        tech_pvt->clear_bidirectional_audio_buffer = true;
-      }
-      else if (0 == type.compare("mark")) {
-        cJSON* data = cJSON_GetObjectItem(json, "data");
-        if (data) {
-          cJSON* name = cJSON_GetObjectItem(data, "name");
-          if (cJSON_IsString(name) && name->valuestring) {
-            if (markCountExceeded(tech_pvt)) {
-              switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO, "(%u) processIncomingMessage - mark count exceeded, discarding mark %s\n", tech_pvt->id, cJSON_GetStringValue(name));
-            }
-            else {
-              if (nullptr == tech_pvt->pVecMarksInInventory) {
-                tech_pvt->pVecMarksInInventory = static_cast<void *>(new std::deque<std::string>());
-                tech_pvt->pVecMarksInUse = static_cast<void *>(new std::deque<std::string>());
-                tech_pvt->pVecMarksCleared = static_cast<void *>(new std::deque<std::string>());
-              }
-              std::deque<std::string>* pVec = static_cast<std::deque<std::string>*>(tech_pvt->pVecMarksInInventory);
-              pVec->push_back(name->valuestring);
-            }
-          }
-        }
-      }
-      else if (0 == type.compare("clearMarks")) {
-        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "(%u) processIncomingMessage - received clearMarks\n", tech_pvt->id);
-        if (nullptr != tech_pvt->pVecMarksInInventory) {
-          std::deque<std::string>* pVecMarksInInventory = static_cast<std::deque<std::string>*>(tech_pvt->pVecMarksInInventory);
-          std::deque<std::string>* pVecMarksInUse = static_cast<std::deque<std::string>*>(tech_pvt->pVecMarksInUse);
-          std::deque<std::string>* pVecMarksCleared = static_cast<std::deque<std::string>*>(tech_pvt->pVecMarksCleared);
-          pVecMarksCleared->insert(pVecMarksCleared->end(), pVecMarksInUse->begin(), pVecMarksInUse->end());
-          pVecMarksCleared->insert(pVecMarksCleared->end(), pVecMarksInInventory->begin(), pVecMarksInInventory->end());
-          pVecMarksInInventory->clear();
-          pVecMarksInUse->clear();
-        }
-      }
-      // BUG-13 fix: check jsonData is not NULL before calling cJSON_PrintUnformatted
-      else if (0 == type.compare("transcription")) {
-        if (jsonData) {
-          char* jsonString = cJSON_PrintUnformatted(jsonData);
-          tech_pvt->responseHandler(session, EVENT_TRANSCRIPTION, jsonString);
-          free(jsonString);
-        }
-      }
-      // BUG-13 fix: check jsonData is not NULL before calling cJSON_PrintUnformatted
-      else if (0 == type.compare("transfer")) {
-        if (jsonData) {
-          char* jsonString = cJSON_PrintUnformatted(jsonData);
-          tech_pvt->responseHandler(session, EVENT_TRANSFER, jsonString);
-          free(jsonString);
-        }
-      }
-      // BUG-13 fix: check jsonData is not NULL before calling cJSON_PrintUnformatted
-      else if (0 == type.compare("disconnect")) {
-        if (jsonData) {
-          char* jsonString = cJSON_PrintUnformatted(jsonData);
-          tech_pvt->responseHandler(session, EVENT_DISCONNECT, jsonString);
-          free(jsonString);
-        }
-      }
-      // BUG-13 fix: check jsonData is not NULL before calling cJSON_PrintUnformatted
-      else if (0 == type.compare("error")) {
-        if (jsonData) {
-          char* jsonString = cJSON_PrintUnformatted(jsonData);
-          tech_pvt->responseHandler(session, EVENT_ERROR, jsonString);
-          free(jsonString);
-        }
-      }
-      else if (0 == type.compare("json")) {
-        char* jsonString = cJSON_PrintUnformatted(json);
-        tech_pvt->responseHandler(session, EVENT_JSON, jsonString);
-        free(jsonString);
-      }
-      // BUG-11 fix: removed duplicate code block (dead code - never reached due to if-else chain)
-      else {
-        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "(%u) processIncomingMessage - unsupported msg type %s\n", tech_pvt->id, type.c_str());  
-      }
-      cJSON_Delete(json);
-    }
-    else {
-      switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "(%u) processIncomingMessage - could not parse message: %s\n", tech_pvt->id, message);
-    }
-  }
-
   static void eventCallback(const char* sessionId, const char* bugname, drachtio::AudioPipe::NotifyEvent_t event, const char* message, const char* binary, size_t len) {
     switch_core_session_t* session = switch_core_session_locate(sessionId);
     if (session) {
@@ -370,11 +177,6 @@ namespace {
             case drachtio::AudioPipe::CONNECT_SUCCESS:
               switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO, "connection successful\n");
               tech_pvt->responseHandler(session, EVENT_CONNECT_SUCCESS, NULL);
-              if (strlen(tech_pvt->initialMetadata) > 0) {
-                switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "sending initial metadata %s\n", tech_pvt->initialMetadata);
-                drachtio::AudioPipe *pAudioPipe = static_cast<drachtio::AudioPipe *>(tech_pvt->pAudioPipe);
-                pAudioPipe->bufferForSending(tech_pvt->initialMetadata);
-              }
             break;
             case drachtio::AudioPipe::CONNECT_FAIL:
             {
@@ -397,9 +199,6 @@ namespace {
               tech_pvt->pAudioPipe = nullptr;
               switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "connection closed gracefully\n");
             break;
-            case drachtio::AudioPipe::MESSAGE:
-              processIncomingMessage(tech_pvt, session, message);
-            break;
             case drachtio::AudioPipe::BINARY:
             processIncomingBinary(tech_pvt, session, binary, len);
             break;
@@ -409,9 +208,9 @@ namespace {
       switch_core_session_rwunlock(session);
     }
   }
-  switch_status_t fork_data_init(private_t *tech_pvt, switch_core_session_t *session, char * host, 
-    unsigned int port, char* path, int sslFlags, int sampling, int desiredSampling, int channels, 
-    char *bugname, char* metadata, int bidirectional_audio_enable,
+  switch_status_t fork_data_init(private_t *tech_pvt, switch_core_session_t *session, char * host,
+    unsigned int port, char* path, int sslFlags, int sampling, int desiredSampling, int channels,
+    char *bugname, int bidirectional_audio_enable,
     int bidirectional_audio_stream, int bidirectional_audio_sample_rate, responseHandler_t responseHandler) {
 
     const char* username = nullptr;
@@ -438,7 +237,6 @@ namespace {
     tech_pvt->path[MAX_PATH_LEN - 1] = '\0';
     tech_pvt->sampling = desiredSampling;
     tech_pvt->responseHandler = responseHandler;
-    tech_pvt->playout = NULL;
     tech_pvt->channels = channels;
     tech_pvt->id = ++idxCallCount;
     tech_pvt->buffer_overrun_notified = 0;
@@ -448,7 +246,6 @@ namespace {
     tech_pvt->bidirectional_audio_enable = bidirectional_audio_enable;
     tech_pvt->bidirectional_audio_stream = bidirectional_audio_stream;
     tech_pvt->bidirectional_audio_sample_rate = bidirectional_audio_sample_rate;
-    tech_pvt->clear_bidirectional_audio_buffer = false;
     tech_pvt->has_set_aside_byte = 0;
     tech_pvt->downscale_factor = 1;
     tech_pvt->raw_write_codec_initialized = 0;
@@ -459,18 +256,11 @@ namespace {
     }
     tech_pvt->streamingPreBufSize = 320 * tech_pvt->downscale_factor * 6; // min 120ms prebuffer
     tech_pvt->streamingPreBuffer = (void *) new CircularBuffer_t(8192);
-    tech_pvt->pVecMarksInInventory = nullptr;
-    tech_pvt->pVecMarksInUse = nullptr;
-    tech_pvt->pVecMarksCleared = nullptr;
 
     // BUG-12 fix: ensure null termination after strncpy
     strncpy(tech_pvt->bugname, bugname, MAX_BUG_LEN);
     tech_pvt->bugname[MAX_BUG_LEN] = '\0';
-    if (metadata) {
-      strncpy(tech_pvt->initialMetadata, metadata, MAX_METADATA_LEN - 1);
-      tech_pvt->initialMetadata[MAX_METADATA_LEN - 1] = '\0';
-    }
-    
+
     size_t buflen = LWS_PRE + (FRAME_SIZE_8000 * desiredSampling / 8000 * channels * 1000 / RTP_PACKETIZATION_PERIOD * nAudioBufferSecs);
 
     // BUG-15 fix: use nothrow new so that allocation failure returns nullptr instead of throwing
@@ -546,29 +336,6 @@ namespace {
       CircularBuffer_t *cBuffer = (CircularBuffer_t *) tech_pvt->streamingPreBuffer;
       delete cBuffer;
       tech_pvt->streamingPreBuffer = nullptr;
-    }
-
-    if (tech_pvt->pVecMarksInInventory) {
-      delete static_cast<std::deque<std::string>*>(tech_pvt->pVecMarksInInventory);
-      tech_pvt->pVecMarksInInventory = nullptr;
-      delete static_cast<std::deque<std::string>*>(tech_pvt->pVecMarksInUse);
-      tech_pvt->pVecMarksInUse = nullptr;
-      delete static_cast<std::deque<std::string>*>(tech_pvt->pVecMarksCleared);
-      tech_pvt->pVecMarksCleared = nullptr;
-    }
-  }
-
-  static void send_mark_event(private_t* tech_pvt, const char* name, int cleared = false) {
-    drachtio::AudioPipe *pAudioPipe = static_cast<drachtio::AudioPipe *>(tech_pvt->pAudioPipe);
-    std::ostringstream json;
-    json << "{\"type\": \"mark\", \"data\": {\"name\":\"" << name << "\", ";
-    if (cleared) json << "\"event\": \"cleared\"}}";
-    else json << "\"event\": \"playout\"}}";
-
-    if (pAudioPipe) {
-      std::string str = json.str();
-      pAudioPipe->bufferForSending(str.c_str());
-      switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "(%u) send_mark_event: %s\n", tech_pvt->id, str.c_str());
     }
   }
 
@@ -691,9 +458,9 @@ extern "C" {
     return SWITCH_STATUS_FALSE;
   }
 
-  switch_status_t fork_session_init(switch_core_session_t *session, 
+  switch_status_t fork_session_init(switch_core_session_t *session,
     responseHandler_t responseHandler,
-    uint32_t samples_per_second, 
+    uint32_t samples_per_second,
     char *host,
     unsigned int port,
     char *path,
@@ -701,7 +468,6 @@ extern "C" {
     int sslFlags,
     int channels,
     char *bugname,
-    char* metadata,
     int bidirectional_audio_enable,
     int bidirectional_audio_stream,
     int bidirectional_audio_sample_rate,
@@ -715,8 +481,8 @@ extern "C" {
       return SWITCH_STATUS_FALSE;
     }
 
-    if (SWITCH_STATUS_SUCCESS != fork_data_init(tech_pvt, session, host, port, path, sslFlags, samples_per_second, sampling, channels, 
-      bugname, metadata, bidirectional_audio_enable, bidirectional_audio_stream, bidirectional_audio_sample_rate, responseHandler)) {
+    if (SWITCH_STATUS_SUCCESS != fork_data_init(tech_pvt, session, host, port, path, sslFlags, samples_per_second, sampling, channels,
+      bugname, bidirectional_audio_enable, bidirectional_audio_stream, bidirectional_audio_sample_rate, responseHandler)) {
       destroy_tech_pvt(tech_pvt);
       return SWITCH_STATUS_FALSE;
     }
@@ -732,7 +498,7 @@ extern "C" {
     return SWITCH_STATUS_SUCCESS;
   }
 
-  switch_status_t fork_session_cleanup(switch_core_session_t *session, char *bugname, char* text, int channelIsClosing) {
+  switch_status_t fork_session_cleanup(switch_core_session_t *session, char *bugname, int channelIsClosing) {
     switch_channel_t *channel = switch_core_session_get_channel(session);
     switch_media_bug_t *bug = (switch_media_bug_t*) switch_channel_get_private(channel, bugname);
     if (!bug) {
@@ -763,16 +529,6 @@ extern "C" {
     }
 
     // delete any temp files
-    struct playout* playout = tech_pvt->playout;
-    while (playout) {
-      std::remove(playout->file);
-      free(playout->file);
-      struct playout *tmp = playout;
-      playout = playout->next;
-      free(tmp);
-    }
-
-    if (pAudioPipe && text) pAudioPipe->bufferForSending(text);
     if (pAudioPipe) {
       // BUG-35 fix: close() returns true when LWS thread will handle AudioPipe cleanup
       // (CONNECTED/CONNECTING states), false when caller should delete (IDLE state)
@@ -785,22 +541,6 @@ extern "C" {
     switch_mutex_unlock(tech_pvt->mutex);
     destroy_tech_pvt(tech_pvt);
     switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO, "(%u) fork_session_cleanup: connection closed\n", id);
-    return SWITCH_STATUS_SUCCESS;
-  }
-
-  switch_status_t fork_session_send_text(switch_core_session_t *session, char *bugname, char* text) {
-    switch_channel_t *channel = switch_core_session_get_channel(session);
-    switch_media_bug_t *bug = (switch_media_bug_t*) switch_channel_get_private(channel, bugname);
-    if (!bug) {
-      switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "fork_session_send_text failed because no bug\n");
-      return SWITCH_STATUS_FALSE;
-    }
-    private_t* tech_pvt = (private_t*) switch_core_media_bug_get_user_data(bug);
-  
-    if (!tech_pvt) return SWITCH_STATUS_FALSE;
-    drachtio::AudioPipe *pAudioPipe = static_cast<drachtio::AudioPipe *>(tech_pvt->pAudioPipe);
-    if (pAudioPipe && text) pAudioPipe->bufferForSending(text);
-
     return SWITCH_STATUS_SUCCESS;
   }
 
@@ -948,85 +688,37 @@ switch_bool_t dub_speech_frame(switch_media_bug_t *bug, private_t* tech_pvt) {
     }
 
     // Lógica de clear buffer
-    if (tech_pvt->clear_bidirectional_audio_buffer) {
-        cBuffer->clear();
-        tech_pvt->clear_bidirectional_audio_buffer = false;
+    // Obter frame do FreeSWITCH
+    switch_frame_t* rframe = switch_core_media_bug_get_write_replace_frame(bug);
 
-        // Processar marcadores cleared (sua lógica atual)
-        if (nullptr != tech_pvt->pVecMarksInInventory) {
-            std::deque<std::string>* pVecMarksInInventory = static_cast<std::deque<std::string>*>(tech_pvt->pVecMarksInInventory);
-            std::deque<std::string>* pVecMarksInUse = static_cast<std::deque<std::string>*>(tech_pvt->pVecMarksInUse);
-            std::deque<std::string>* pVecMarksCleared = static_cast<std::deque<std::string>*>(tech_pvt->pVecMarksCleared);
+    if (rframe && rframe->datalen > 0) {
+        int16_t *fp = reinterpret_cast<int16_t*>(rframe->data);
+        int samples_needed = rframe->samples;
 
-            if (pVecMarksInInventory->size() + pVecMarksInUse->size() > 0) {
-                std::deque<std::string> vec = *pVecMarksInUse;
-                vec.insert(vec.end(), pVecMarksInInventory->begin(), pVecMarksInInventory->end());
+        // Verificar dados disponíveis
+        int samplesToCopy = std::min(static_cast<int>(cBuffer->size()), samples_needed);
 
-                for (auto it = vec.begin(); it != vec.end(); ++it) {
-                    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO,
-                                     "(%u) Marker %s cleared\n", tech_pvt->id, it->c_str());
-                    send_mark_event(tech_pvt, it->c_str(), true);
-                }
+        if (samplesToCopy > 0) {
+            // Preparar dados com silêncio
+            std::vector<int16_t> data(samples_needed, 0);
+            std::copy_n(cBuffer->begin(), samplesToCopy, data.begin());
+            cBuffer->erase(cBuffer->begin(), cBuffer->begin() + samplesToCopy);
 
-                pVecMarksCleared->insert(pVecMarksCleared->end(), pVecMarksInUse->begin(), pVecMarksInUse->end());
-                pVecMarksInUse->clear();
-                pVecMarksInInventory->clear();
-            }
-        }
-    } else {
-        // Obter frame do FreeSWITCH
-        switch_frame_t* rframe = switch_core_media_bug_get_write_replace_frame(bug);
+            // SUBSTITUIR completamente o frame original
+            memcpy(fp, data.data(), samples_needed * sizeof(int16_t));
+            rframe->channels = 1;
+            rframe->datalen = samples_needed * sizeof(int16_t);
 
-        if (rframe && rframe->datalen > 0) {
-            int16_t *fp = reinterpret_cast<int16_t*>(rframe->data);
-            int samples_needed = rframe->samples;
+            // Aplicar a substituição
+            switch_core_media_bug_set_write_replace_frame(bug, rframe);
 
-            // Verificar dados disponíveis
-            int samplesToCopy = std::min(static_cast<int>(cBuffer->size()), samples_needed);
-
-            if (samplesToCopy > 0) {
-                // Preparar dados com silêncio
-                std::vector<int16_t> data(samples_needed, 0);
-                std::copy_n(cBuffer->begin(), samplesToCopy, data.begin());
-                cBuffer->erase(cBuffer->begin(), cBuffer->begin() + samplesToCopy);
-
-                // Processar marcadores
-                for (int i = 0; i < samplesToCopy; i++) {
-                    if ((uint16_t)data[i] == AUDIO_MARKER && nullptr != tech_pvt->pVecMarksInUse) {
-                        std::deque<std::string>* pVecMarksInUse = static_cast<std::deque<std::string>*>(tech_pvt->pVecMarksInUse);
-                        std::deque<std::string>* pVecMarksCleared = static_cast<std::deque<std::string>*>(tech_pvt->pVecMarksCleared);
-
-                        if (!pVecMarksInUse->empty()) {
-                            std::string mark = pVecMarksInUse->front();
-                            pVecMarksInUse->pop_front();
-
-                            auto it = std::find(pVecMarksCleared->begin(), pVecMarksCleared->end(), mark);
-                            if (it == pVecMarksCleared->end()) {
-                                send_mark_event(tech_pvt, mark.c_str(), false);
-                            } else {
-                                pVecMarksCleared->erase(it);
-                            }
-                        }
-                        data[i] = 0; // Substituir marcador por silêncio
-                    }
-                }
-
-                // SUBSTITUIR completamente o frame original
-                memcpy(fp, data.data(), samples_needed * sizeof(int16_t));
-                rframe->channels = 1;
-                rframe->datalen = samples_needed * sizeof(int16_t);
-
-                // Aplicar a substituição
-                switch_core_media_bug_set_write_replace_frame(bug, rframe);
-
-            } else {
-                underrun_count++;
-                // Buffer vazio: enviar silêncio para evitar picotes
-                memset(fp, 0, samples_needed * sizeof(int16_t));
-                rframe->channels = 1;
-                rframe->datalen = samples_needed * sizeof(int16_t);
-                switch_core_media_bug_set_write_replace_frame(bug, rframe);
-            }
+        } else {
+            underrun_count++;
+            // Buffer vazio: enviar silêncio para evitar picotes
+            memset(fp, 0, samples_needed * sizeof(int16_t));
+            rframe->channels = 1;
+            rframe->datalen = samples_needed * sizeof(int16_t);
+            switch_core_media_bug_set_write_replace_frame(bug, rframe);
         }
     }
 

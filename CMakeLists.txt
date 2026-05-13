@@ -121,7 +121,6 @@ endif()
 set(MOD_AUDIO_FORK_SOURCES
     mod_audio_fork.c
     lws_glue.cpp
-    parser.cpp
     audio_pipe.cpp
     vector_math.cpp
 )

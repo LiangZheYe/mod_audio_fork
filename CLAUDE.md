@@ -29,7 +29,7 @@ No test suite exists. Verify manually: `fs_cli -x "module_exists mod_audio_fork"
 
 ## Architecture
 
-FreeSWITCH loadable module that streams call audio over WebSockets (L16/PCM) with bidirectional support — uplink forks call audio to a server, downlink injects server audio back into the call.
+FreeSWITCH loadable module that streams call audio over WebSockets (L16/PCM) with bidirectional support — uplink forks call audio to a server, downlink injects server audio back into the call via binary WebSocket frames.
 
 ### Source Files
 
@@ -37,11 +37,9 @@ FreeSWITCH loadable module that streams call audio over WebSockets (L16/PCM) wit
 |------|------|------|
 | `mod_audio_fork.c` | C99 | FreeSWITCH module entry, API command dispatch, media bug callback routing |
 | `mod_audio_fork.h` | C99 | `private_t` struct, constants, event type enums |
-| `lws_glue.cpp` | C++11 | C/C++ bridge: audio capture (`fork_frame`), playback injection (`dub_speech_frame`), JSON/binary message processing, session lifecycle |
+| `lws_glue.cpp` | C++11 | C/C++ bridge: audio capture (`fork_frame`), playback injection (`dub_speech_frame`), binary message processing, session lifecycle |
 | `audio_pipe.cpp/hpp` | C++11 | WebSocket transport: LWS callbacks, connection state machine, thread-safe audio buffers |
-| `parser.cpp/hpp` | C++11 | JSON message parsing (server→module commands) |
 | `vector_math.cpp/h` | C99 | SIMD audio ops (AVX2/SSE2/scalar): add, normalize, volume |
-| `base64.hpp` | C++11 | Header-only base64 encode/decode |
 
 ### Threading Model
 
@@ -62,8 +60,6 @@ Three thread types interact, making thread safety the central concern:
 
 **Uplink (call → server):** Media thread → `fork_frame()` → `switch_core_media_bug_read()` writes directly into AudioPipe's `m_audio_buffer` (zero-copy when no resampling) → `unlockAudioBuffer()` triggers `lws_cancel_service()` → LWS thread sends via `lws_write()`.
 
-**Downlink JSON (server → call):** LWS thread receives → `processIncomingMessage()` → base64-decode → lock `tech_pvt->mutex` → insert into `playoutBuffer`.
-
 **Downlink binary (server → call):** LWS thread receives → `processIncomingBinary()` → byte-alignment fixup → write to `streamingPreBuffer` (absorbs jitter, ~120ms threshold) → Speex resample if needed → lock `tech_pvt->mutex` → insert into `playoutBuffer`.
 
 **Playout (media thread, every 20ms):** `dub_speech_frame()` → lock `tech_pvt->mutex` → read from `playoutBuffer` → replace write frame via `switch_core_media_bug_set_write_replace_frame()`. Empty buffer → silence fill.
@@ -72,13 +68,9 @@ Three thread types interact, making thread safety the central concern:
 
 `IDLE` → `CONNECTING` → `CONNECTED` → `DISCONNECTING` → `DISCONNECTED` (→ `delete`). On connect failure: `CONNECTING` → `FAILED` (→ `delete`). All `delete` calls happen in the LWS thread.
 
-### Mark Mechanism
-
-Server sends `{"type":"mark","data":{"name":"X"}}` before audio. Mark is queued, `AUDIO_MARKER` (0xFFFF) inserted into prebuffer. When `dub_speech_frame` consumes the marker, a mark event fires back to the server. Max 30 pending markers.
-
 ## Dependencies
 
-- **FreeSWITCH** >= 1.10 (core API, media bug, events, built-in cJSON)
+- **FreeSWITCH** >= 1.10 (core API, media bug, events)
 - **libwebsockets** >= 4.0 (WebSocket client, TLS, event loop)
 - **speexdsp** >= 1.2 (Speex Resampler for sample rate conversion)
 - **Boost** >= 1.71 (`circular_buffer` header-only)
@@ -104,9 +96,8 @@ Server sends `{"type":"mark","data":{"name":"X"}}` before audio. Mark is queued,
 
 All via `uuid_audio_fork <uuid> <command> [args...]`:
 
-- `start <wss-url> <mix-type> <sampling-rate> [bugname] [metadata] [bidir_enabled] [bidir_stream_enabled] [bidir_stream_samplerate]` — attach media bug, start streaming
-- `stop [bugname] [metadata]` — close connection, detach bug
-- `send_text [bugname] <text>` — send text frame to server
+- `start <wss-url> <mix-type> <sampling-rate> [bugname] [bidir_enabled] [bidir_stream_enabled] [bidir_stream_samplerate]` — attach media bug, start streaming
+- `stop [bugname]` — close connection, detach bug
 - `pause [bugname]` / `resume [bugname]` — pause/resume streaming
 - `graceful-shutdown [bugname]` — drain buffers then close
 - `stop_play [bugname]` — clear playout buffer, stop playback
@@ -115,4 +106,4 @@ Mix types: `mono`, `mixed`, `stereo`. Sample rates: any multiple of 8000 (e.g. `
 
 ## Events
 
-Module fires these FreeSWITCH custom events: `mod_audio_fork::connect`, `connect_failed`, `disconnect`, `buffer_overrun`, `transcription`, `transfer`, `play_audio`, `kill_audio`, `error`, `json`.
+Module fires these FreeSWITCH custom events: `mod_audio_fork::connect`, `connect_failed`, `disconnect`, `error`, `buffer_overrun`.

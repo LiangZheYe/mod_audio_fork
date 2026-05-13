@@ -28,7 +28,6 @@ namespace drachtio {
       CONNECT_FAIL,
       CONNECTION_DROPPED,
       CONNECTION_CLOSED_GRACEFULLY,
-      MESSAGE,
       BINARY
     };
     typedef void (*log_emit_function)(int level, const char *line);
@@ -52,7 +51,6 @@ namespace drachtio {
 
     LwsState_t getLwsState(void) { return m_state.load(); } // BUG-20 fix: m_state is now atomic
     void connect(void);
-    void bufferForSending(const char* text);
     size_t binarySpaceAvailable(void) {
       return m_audio_buffer_max_len - m_audio_buffer_write_offset;
     }
@@ -132,8 +130,6 @@ namespace drachtio {
     std::string m_bugname;
     unsigned int m_port;
     std::string m_path;
-    std::list<std::string> m_metadata_list;
-    std::mutex m_text_mutex;
     std::mutex m_audio_mutex;
     int m_sslFlags;
     struct lws *m_wsi;
@@ -141,9 +137,6 @@ namespace drachtio {
     size_t m_audio_buffer_max_len;
     size_t m_audio_buffer_write_offset;
     size_t m_audio_buffer_min_freespace;
-    uint8_t* m_recv_buf;
-    uint8_t* m_recv_buf_ptr;
-    size_t m_recv_buf_len;
     struct lws_per_vhost_data* m_vhd;
     notifyHandler_t m_callback;
     log_emit_function m_logger;

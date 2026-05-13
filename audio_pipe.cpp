@@ -4,10 +4,6 @@
 #include <iostream>
 #include <vector>
 
-/* discard incoming text messages over the socket that are longer than this */
-#define MAX_RECV_BUF_SIZE (65 * 1024 * 10)
-#define RECV_BUF_REALLOC_SIZE (8 * 1024)
-
 using namespace drachtio;
 
 namespace {
@@ -168,55 +164,8 @@ int AudioPipe::lws_callback(struct lws *wsi,
           }
         }
         else {
-          if (lws_is_first_fragment(wsi)) {
-            // allocate a buffer for the entire chunk of memory needed
-            // BUG-16 fix: replace assert with runtime check to protect production builds
-            if (nullptr != ap->m_recv_buf) {
-              switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "recv_buf leak detected, freeing\n");
-              free(ap->m_recv_buf);
-              ap->m_recv_buf = nullptr;
-            }
-            ap->m_recv_buf_len = len + lws_remaining_packet_payload(wsi);
-            ap->m_recv_buf = (uint8_t*) malloc(ap->m_recv_buf_len);
-            ap->m_recv_buf_ptr = ap->m_recv_buf;
-          }
-
-          size_t write_offset = ap->m_recv_buf_ptr - ap->m_recv_buf;
-          size_t remaining_space = ap->m_recv_buf_len - write_offset;
-          if (remaining_space < len) {
-            //switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO,"AudioPipe::lws_service_thread LWS_CALLBACK_CLIENT_RECEIVE buffer realloc needed.\n");
-            size_t newlen = ap->m_recv_buf_len + RECV_BUF_REALLOC_SIZE;
-            if (newlen > MAX_RECV_BUF_SIZE) {
-              free(ap->m_recv_buf);
-              ap->m_recv_buf = ap->m_recv_buf_ptr = nullptr;
-              ap->m_recv_buf_len = 0;
-              switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR,"AudioPipe::lws_service_thread LWS_CALLBACK_CLIENT_RECEIVE max buffer exceeded, truncating message.\n");
-            }
-            else {
-              ap->m_recv_buf = (uint8_t*) realloc(ap->m_recv_buf, newlen);
-              if (nullptr != ap->m_recv_buf) {
-                ap->m_recv_buf_len = newlen;
-                ap->m_recv_buf_ptr = ap->m_recv_buf + write_offset;
-              }
-            }
-          }
-
-          if (nullptr != ap->m_recv_buf) {
-            if (len > 0) {
-              memcpy(ap->m_recv_buf_ptr, in, len);
-              ap->m_recv_buf_ptr += len;
-            }
-            if (lws_is_final_fragment(wsi)) {
-              if (nullptr != ap->m_recv_buf) {
-                size_t total_len = ap->m_recv_buf_ptr - ap->m_recv_buf;
-                std::string msg((char *)ap->m_recv_buf, total_len);
-                ap->m_callback(ap->m_uuid.c_str(), ap->m_bugname.c_str(), AudioPipe::MESSAGE, msg.c_str(), NULL, total_len);
-                if (nullptr != ap->m_recv_buf) free(ap->m_recv_buf);
-              }
-              ap->m_recv_buf = ap->m_recv_buf_ptr = nullptr;
-              ap->m_recv_buf_len = 0;
-            }
-          }
+          switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING,
+            "AudioPipe::lws_service_thread received text frame, ignoring (JSON signaling removed)\n");
         }
       }
       break;
@@ -238,28 +187,6 @@ int AudioPipe::lws_callback(struct lws *wsi,
         }
 
         // check for text frames to send
-        {
-          std::lock_guard<std::mutex> lk(ap->m_text_mutex);
-          if (!ap->m_metadata_list.empty()) {
-            const std::string& message = ap->m_metadata_list.front();
-            // BUG-07 fix: replace VLA with std::vector to avoid stack overflow on large messages
-            std::vector<uint8_t> buf(message.length() + LWS_PRE);
-            memcpy(buf.data() + LWS_PRE, message.c_str(), message.length());
-            int n = message.length();
-            int m = lws_write(wsi, buf.data() + LWS_PRE, n, LWS_WRITE_TEXT);
-
-            if (m < n) {
-              return -1; // Failed to send the full message
-            }
-
-            // Remove the message that was successfully sent
-            ap->m_metadata_list.pop_front();
-            // Request another writable event if there are more messages
-            lws_callback_on_writable(wsi);
-            return 0;
-          }
-        }
-
         if (ap->m_state == LWS_CLIENT_DISCONNECTING) {
           lws_close_reason(wsi, LWS_CLOSE_STATUS_NORMAL, NULL, 0);
           return -1;
@@ -505,7 +432,6 @@ AudioPipe::AudioPipe(const char* uuid, const char* host, unsigned int port, cons
   m_state(LWS_CLIENT_IDLE), m_uuid(uuid), m_host(host), m_bugname(bugname), m_port(port), m_path(path),
   m_sslFlags(sslFlags), m_wsi(nullptr), m_audio_buffer_max_len(bufLen),
   m_audio_buffer_write_offset(LWS_PRE), m_audio_buffer_min_freespace(minFreespace),
-  m_recv_buf(nullptr), m_recv_buf_ptr(nullptr),
   m_vhd(nullptr), m_callback(callback), m_gracefulShutdown(false) {
 
   if (username && password) {
@@ -517,7 +443,6 @@ AudioPipe::AudioPipe(const char* uuid, const char* host, unsigned int port, cons
 }
 AudioPipe::~AudioPipe() {
   if (m_audio_buffer) delete [] m_audio_buffer;
-  if (m_recv_buf) free(m_recv_buf);
 }
 
 void AudioPipe::connect(void) {
@@ -554,15 +479,6 @@ bool AudioPipe::connect_client(struct lws_per_vhost_data *vhd) {
   switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG,"%s attempting connection, wsi is %p\n", m_uuid.c_str(), m_wsi);
 
   return nullptr != m_wsi;
-}
-
-void AudioPipe::bufferForSending(const char* text) {
-  if (m_state != LWS_CLIENT_CONNECTED) return;
-  {
-    std::lock_guard<std::mutex> lk(m_text_mutex);
-    m_metadata_list.emplace_back(text);
-  }
-  addPendingWrite(this);
 }
 
 void AudioPipe::unlockAudioBuffer() {
