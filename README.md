@@ -1,5 +1,7 @@
 # mod_audio_inject
 
+[中文文档](README_zh.md)
+
 A FreeSWITCH module that attaches a media bug to a channel and streams L16 audio via WebSockets to a remote server. This module supports **bidirectional audio** — receiving audio back from the server via binary WebSocket frames for real-time playback to the caller, enabling full-fledged IVR, dialog, and voice-bot applications.
 
 ## Features
