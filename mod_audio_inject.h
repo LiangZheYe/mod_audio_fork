@@ -6,17 +6,17 @@
 #include <switch.h>
 #include <unistd.h>
 
-#define MY_BUG_NAME "audio_fork"
+#define MY_BUG_NAME "audio_inject"
 #define MAX_BUG_LEN (64)
 #define MAX_SESSION_ID (256)
 #define MAX_WS_URL_LEN (512)
 #define MAX_PATH_LEN (4096)
 
-#define EVENT_DISCONNECT "mod_audio_fork::disconnect"
-#define EVENT_ERROR "mod_audio_fork::error"
-#define EVENT_CONNECT_SUCCESS "mod_audio_fork::connect"
-#define EVENT_CONNECT_FAIL "mod_audio_fork::connect_failed"
-#define EVENT_BUFFER_OVERRUN "mod_audio_fork::buffer_overrun"
+#define EVENT_DISCONNECT "mod_audio_inject::disconnect"
+#define EVENT_ERROR "mod_audio_inject::error"
+#define EVENT_CONNECT_SUCCESS "mod_audio_inject::connect"
+#define EVENT_CONNECT_FAIL "mod_audio_inject::connect_failed"
+#define EVENT_BUFFER_OVERRUN "mod_audio_inject::buffer_overrun"
 
 typedef void (*responseHandler_t)(switch_core_session_t *session,
                                   const char *eventName, char *json);

@@ -1,4 +1,4 @@
-# Building mod_audio_fork
+# Building mod_audio_inject
 
 ## Prerequisites
 
@@ -82,8 +82,8 @@ make -j$(nproc)
 
 Then install:
 ```bash
-sudo cp mod_audio_fork.so /usr/local/freeswitch/mod/
-sudo chown freeswitch:freeswitch /usr/local/freeswitch/mod/mod_audio_fork.so
+sudo cp mod_audio_inject.so /usr/local/freeswitch/mod/
+sudo chown freeswitch:freeswitch /usr/local/freeswitch/mod/mod_audio_inject.so
 ```
 
 ## Installation & Configuration
@@ -92,7 +92,7 @@ sudo chown freeswitch:freeswitch /usr/local/freeswitch/mod/mod_audio_fork.so
 
 Add to your FreeSWITCH `modules.conf.xml`:
 ```xml
-<load module="mod_audio_fork"/>
+<load module="mod_audio_inject"/>
 ```
 
 ### 2. Restart FreeSWITCH
@@ -103,13 +103,13 @@ sudo systemctl restart freeswitch
 
 Or reload from fs_cli:
 ```bash
-fs_cli -x "reload mod_audio_fork"
+fs_cli -x "reload mod_audio_inject"
 ```
 
 ### 3. Verify
 
 ```bash
-fs_cli -x "module_exists mod_audio_fork"
+fs_cli -x "module_exists mod_audio_inject"
 ```
 
 ## Troubleshooting
@@ -118,9 +118,9 @@ fs_cli -x "module_exists mod_audio_fork"
 
 | Problem | Solution |
 |---|---|
-| Module not found | Verify `mod_audio_fork.so` is in the FreeSWITCH modules directory |
+| Module not found | Verify `mod_audio_inject.so` is in the FreeSWITCH modules directory |
 | Permission denied | Ensure the file is owned by `freeswitch:freeswitch` |
-| Missing dependencies | Run `ldd mod_audio_fork.so` to check for unresolved symbols |
+| Missing dependencies | Run `ldd mod_audio_inject.so` to check for unresolved symbols |
 | Build errors | Ensure FreeSWITCH headers and all dependencies are installed |
 
 ### Debug Logging
@@ -138,5 +138,5 @@ fs_cli -x "console loglevel debug"
 ### Verify Library Dependencies
 
 ```bash
-ldd /usr/local/freeswitch/mod/mod_audio_fork.so
+ldd /usr/local/freeswitch/mod/mod_audio_inject.so
 ```

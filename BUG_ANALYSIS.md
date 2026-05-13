@@ -1,4 +1,4 @@
-# mod_audio_fork 严重 Bug 分析报告
+# mod_audio_inject 严重 Bug 分析报告
 
 **分析日期**: 2026-05-08
 **分析范围**: 全部源文件
@@ -54,7 +54,7 @@ else {
 
 ### BUG-22: `capture_callback` 中 `SWITCH_ABC_TYPE_CLOSE` 分支缺少 `tech_pvt` 空指针检查
 
-**文件**: `mod_audio_fork.c`
+**文件**: `mod_audio_inject.c`
 **位置**: 第 33, 40 行
 
 ```cpp
@@ -74,7 +74,7 @@ static switch_bool_t capture_callback(switch_media_bug_t *bug, void *user_data, 
       // ← 直接访问 tech_pvt->bugname, 无空指针检查 → 崩溃!
       switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO,
         "Got SWITCH_ABC_TYPE_CLOSE for bug %s\n", tech_pvt->bugname);
-      fork_session_cleanup(session, tech_pvt->bugname, NULL, 1);
+      inject_session_cleanup(session, tech_pvt->bugname, NULL, 1);
     }
     break;
 
@@ -86,10 +86,10 @@ static switch_bool_t capture_callback(switch_media_bug_t *bug, void *user_data, 
 ```
 
 `switch_core_media_bug_get_user_data` 可能返回 NULL 的场景:
-- `fork_session_cleanup` 在第752行执行了 `switch_channel_set_private(channel, bugname, NULL)`，如果 FreeSWITCH 在此之后仍触发 `SWITCH_ABC_TYPE_CLOSE` 回调，`get_user_data` 将返回 NULL
-- `start_capture` 中 `fork_session_connect` 失败后（BUG-08），media bug 被添加但 user data 可能处于不一致状态
+- `inject_session_cleanup` 在第752行执行了 `switch_channel_set_private(channel, bugname, NULL)`，如果 FreeSWITCH 在此之后仍触发 `SWITCH_ABC_TYPE_CLOSE` 回调，`get_user_data` 将返回 NULL
+- `start_capture` 中 `inject_session_connect` 失败后（BUG-08），media bug 被添加但 user data 可能处于不一致状态
 
-对比同一函数的其他分支：`SWITCH_ABC_TYPE_READ` 调用的 `fork_frame` 内部有 `if (!tech_pvt)` 检查（lws_glue.cpp 第831行），`SWITCH_ABC_TYPE_WRITE_REPLACE` 调用的 `dub_speech_frame` 同样有空检查（第919行），唯独 `SWITCH_ABC_TYPE_CLOSE` 缺失。
+对比同一函数的其他分支：`SWITCH_ABC_TYPE_READ` 调用的 `inject_frame` 内部有 `if (!tech_pvt)` 检查（lws_glue.cpp 第831行），`SWITCH_ABC_TYPE_WRITE_REPLACE` 调用的 `dub_speech_frame` 同样有空检查（第919行），唯独 `SWITCH_ABC_TYPE_CLOSE` 缺失。
 
 **修复方案**:
 ```cpp
@@ -102,7 +102,7 @@ case SWITCH_ABC_TYPE_CLOSE:
     }
     switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO,
       "Got SWITCH_ABC_TYPE_CLOSE for bug %s\n", tech_pvt->bugname);
-    fork_session_cleanup(session, tech_pvt->bugname, NULL, 1);
+    inject_session_cleanup(session, tech_pvt->bugname, NULL, 1);
   }
   break;
 ```
@@ -286,7 +286,7 @@ int m = lws_write(wsi, buf.data() + LWS_PRE, n, LWS_WRITE_TEXT);
 
 ### BUG-08: `start_capture` 连接失败时资源泄漏
 
-**文件**: `mod_audio_fork.c`
+**文件**: `mod_audio_inject.c`
 **位置**: 第 107-116 行
 
 ```cpp
@@ -298,34 +298,34 @@ if ((status = switch_core_media_bug_add(session, bugname, NULL, capture_callback
 switch_channel_set_private(channel, bugname, bug);
 
 // 连接失败
-if (fork_session_connect(&pUserData) != SWITCH_STATUS_SUCCESS) {
-  switch_log_printf(..., "Error mod_audio_fork session cannot connect.\n");
+if (inject_session_connect(&pUserData) != SWITCH_STATUS_SUCCESS) {
+  switch_log_printf(..., "Error mod_audio_inject session cannot connect.\n");
   return SWITCH_STATUS_FALSE;  // ← bug 已添加但未移除! AudioPipe/tech_pvt 未清理!
 }
 ```
 
-当 `fork_session_connect` 失败时，media bug 已添加到 channel，AudioPipe 和 tech_pvt 已分配但都不会被清理。
+当 `inject_session_connect` 失败时，media bug 已添加到 channel，AudioPipe 和 tech_pvt 已分配但都不会被清理。
 
 **修复方案**:
 ```cpp
-if (fork_session_connect(&pUserData) != SWITCH_STATUS_SUCCESS) {
+if (inject_session_connect(&pUserData) != SWITCH_STATUS_SUCCESS) {
   switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
-    "Error mod_audio_fork session cannot connect.\n");
+    "Error mod_audio_inject session cannot connect.\n");
   switch_channel_set_private(channel, bugname, NULL);
   switch_core_media_bug_remove(session, &bug);
-  fork_session_cleanup(session, bugname, NULL, 0);
+  inject_session_cleanup(session, bugname, NULL, 0);
   return SWITCH_STATUS_FALSE;
 }
 ```
 
 ---
 
-### BUG-19: `fork_data_init` 部分初始化失败时资源泄漏
+### BUG-19: `inject_data_init` 部分初始化失败时资源泄漏
 
 **文件**: `lws_glue.cpp`
-**位置**: 第 423-520 行 (`fork_data_init`), 第 522-559 行 (`destroy_tech_pvt`)
+**位置**: 第 423-520 行 (`inject_data_init`), 第 522-559 行 (`destroy_tech_pvt`)
 
-`fork_data_init` 按顺序分配了多个资源，但后续步骤失败时直接 `return SWITCH_STATUS_FALSE`，不清理已分配的资源。虽然调用方 `fork_session_init` (第716行) 在失败时调用了 `destroy_tech_pvt`，但 `destroy_tech_pvt` **不释放 `pAudioPipe` (AudioPipe 对象)**，导致 AudioPipe 内存泄漏。
+`inject_data_init` 按顺序分配了多个资源，但后续步骤失败时直接 `return SWITCH_STATUS_FALSE`，不清理已分配的资源。虽然调用方 `inject_session_init` (第716行) 在失败时调用了 `destroy_tech_pvt`，但 `destroy_tech_pvt` **不释放 `pAudioPipe` (AudioPipe 对象)**，导致 AudioPipe 内存泄漏。
 
 资源分配顺序与错误路径分析:
 
@@ -368,7 +368,7 @@ void destroy_tech_pvt(private_t* tech_pvt) {
 }
 ```
 
-**修复方案**: 在 `destroy_tech_pvt` 中添加 AudioPipe 释放，并在 `fork_data_init` 失败路径中做局部回滚:
+**修复方案**: 在 `destroy_tech_pvt` 中添加 AudioPipe 释放，并在 `inject_data_init` 失败路径中做局部回滚:
 
 ```cpp
 void destroy_tech_pvt(private_t* tech_pvt) {
@@ -382,7 +382,7 @@ void destroy_tech_pvt(private_t* tech_pvt) {
 }
 ```
 
-同时，在 `fork_data_init` 内部的失败路径中添加局部回滚（避免依赖调用方做完整清理）:
+同时，在 `inject_data_init` 内部的失败路径中添加局部回滚（避免依赖调用方做完整清理）:
 
 ```cpp
 // 步骤5: mutex 初始化
@@ -415,13 +415,13 @@ if (0 != err) {
 
 ## P2 - 逻辑错误 / 竞态条件
 
-### BUG-09: `fork_session_cleanup` 中 TOCTOU 竞态条件
+### BUG-09: `inject_session_cleanup` 中 TOCTOU 竞态条件
 
 **文件**: `lws_glue.cpp`
 **位置**: 第 731-775 行
 
 ```cpp
-switch_status_t fork_session_cleanup(...) {
+switch_status_t inject_session_cleanup(...) {
   // ...
   private_t* tech_pvt = (private_t*) switch_core_media_bug_get_user_data(bug);
   uint32_t id = tech_pvt->id;
@@ -549,9 +549,9 @@ void AudioPipe::addPendingDisconnect(AudioPipe* ap) {
 
 1. **`bufferForSending` (第538行)**: 有 `m_state != LWS_CLIENT_CONNECTED` 守卫，理论上安全。但与 BUG-20 的 `m_state` 竞态组合时，`m_state` 可能刚被设为 `CONNECTED` 而 `m_vhd` 尚未赋值（第103-104行之间）。
 
-2. **`unlockAudioBuffer` (第542行)**: **无状态守卫**。`fork_frame` 在调用前检查了 `getLwsState() != LWS_CLIENT_CONNECTED`，但 `unlockAudioBuffer` 本身不做任何状态检查。如果在连接建立前 audio buffer 中已有数据（写偏移 > LWS_PRE），就会调用 `addPendingWrite` 此时 `m_vhd` 仍为 null。
+2. **`unlockAudioBuffer` (第542行)**: **无状态守卫**。`inject_frame` 在调用前检查了 `getLwsState() != LWS_CLIENT_CONNECTED`，但 `unlockAudioBuffer` 本身不做任何状态检查。如果在连接建立前 audio buffer 中已有数据（写偏移 > LWS_PRE），就会调用 `addPendingWrite` 此时 `m_vhd` 仍为 null。
 
-3. **`do_graceful_shutdown` (第553行)**: **无状态守卫**。`fork_session_graceful_shutdown` 在调用前不检查连接状态。如果 WebSocket 连接尚未建立就收到 graceful-shutdown 命令，`m_vhd` 为 null。
+3. **`do_graceful_shutdown` (第553行)**: **无状态守卫**。`inject_session_graceful_shutdown` 在调用前不检查连接状态。如果 WebSocket 连接尚未建立就收到 graceful-shutdown 命令，`m_vhd` 为 null。
 
 `addPendingDisconnect` 同样受影响 — `AudioPipe::close()` 虽然有 `m_state != LWS_CLIENT_CONNECTED` 守卫，但 `m_vhd` 的赋值和 `m_state` 的设置不是原子操作。
 
@@ -614,11 +614,11 @@ switch_bool_t dub_speech_frame(switch_media_bug_t *bug, private_t* tech_pvt) {
 
 **修复方案**: 将计数器移入 `private_t` 结构体:
 ```cpp
-// 在 mod_audio_fork.h 的 private_data 中添加:
+// 在 mod_audio_inject.h 的 private_data 中添加:
 uint32_t dub_call_count;
 uint32_t dub_underrun_count;
 
-// 在 fork_data_init 中初始化:
+// 在 inject_data_init 中初始化:
 tech_pvt->dub_call_count = 0;
 tech_pvt->dub_underrun_count = 0;
 ```
@@ -660,7 +660,7 @@ else if (0 == type.compare("json")) { ... }
 
 `strncpy` 在源字符串长度 >= 目标缓冲区大小时不会自动追加 `'\0'`。代码中其他 `strncpy` 调用（第443-449行、第609-610行）都正确追加了终止符，但以下3处遗漏:
 
-**第1处 — 第 477 行** (`fork_data_init`):
+**第1处 — 第 477 行** (`inject_data_init`):
 ```cpp
 strncpy(tech_pvt->bugname, bugname, MAX_BUG_LEN);
 // ← 如果 strlen(bugname) >= MAX_BUG_LEN, 不会追加 '\0'!
@@ -733,7 +733,7 @@ else if (0 == type.compare("transcription")) {
 **文件**: `lws_glue.cpp`
 **位置**: 第 522-559 行, 与 `eventCallback` (第 372-422 行)
 
-当 `fork_session_cleanup` 调用 `destroy_tech_pvt` 时:
+当 `inject_session_cleanup` 调用 `destroy_tech_pvt` 时:
 1. 销毁 mutex (`switch_mutex_destroy`)
 2. 销毁 streaming buffers
 3. 销毁 resampler
@@ -745,7 +745,7 @@ else if (0 == type.compare("transcription")) {
 
 如果 `destroy_tech_pvt` 在 `eventCallback` 执行期间销毁了 mutex 或 buffers，将导致 use-after-free 崩溃。
 
-**修复方案**: 在 `destroy_tech_pvt` 中，不应直接销毁共享资源。应确保 LWS 回调已完成后再销毁。一种方法是在 `fork_session_cleanup` 中等待 AudioPipe 的 `LWS_CALLBACK_CLIENT_CLOSED` 回调完成后再调用 `destroy_tech_pvt`。
+**修复方案**: 在 `destroy_tech_pvt` 中，不应直接销毁共享资源。应确保 LWS 回调已完成后再销毁。一种方法是在 `inject_session_cleanup` 中等待 AudioPipe 的 `LWS_CALLBACK_CLIENT_CLOSED` 回调完成后再调用 `destroy_tech_pvt`。
 
 ---
 
@@ -833,7 +833,7 @@ case LWS_CALLBACK_CLIENT_CLOSED:
   // ...
   *ppAp = NULL;
   delete ap;  // ← AudioPipe 对象被删除
-  // 但 fork_frame / fork_session_send_text 等可能仍持有指向此对象的指针
+  // 但 inject_frame / fork_session_send_text 等可能仍持有指向此对象的指针
   // tech_pvt->pAudioPipe 在 eventCallback 中被设为 nullptr
   // 但存在时间窗口: delete ap 之后、eventCallback 设置 nullptr 之前
 }
@@ -848,15 +848,15 @@ case LWS_CALLBACK_CLIENT_CLOSED:
 | 编号 | 严重级别 | 类型 | 文件 | 描述 |
 |------|---------|------|------|------|
 | BUG-01 | P0 | 空指针崩溃 | lws_glue.cpp | 4处 LWS 回调中空指针解引用 |
-| BUG-22 | P0 | 空指针崩溃 | mod_audio_fork.c | `capture_callback` CLOSE 分支缺少 `tech_pvt` 空检查 |
+| BUG-22 | P0 | 空指针崩溃 | mod_audio_inject.c | `capture_callback` CLOSE 分支缺少 `tech_pvt` 空检查 |
 | BUG-02 | P0 | 空指针崩溃 | lws_glue.cpp | `tech_pvt->id` 在 NULL 检查前访问 |
 | BUG-03 | P0 | 数组越界 | vector_math.cpp | `vector_change_sln_volume_granular` 索引越界 |
 | BUG-04 | P0 | 链接错误 | vector_math.cpp | SSE2 路径缺少函数定义 |
 | BUG-05 | P1 | 内存泄漏 | lws_glue.cpp | 连接失败时 AudioPipe 未释放 |
 | BUG-06 | P1 | 缓冲区溢出 | lws_glue.cpp | Base64 编码长度计算错误 |
 | BUG-07 | P1 | 栈溢出 | lws_glue.cpp | VLA 可能导致栈溢出 |
-| BUG-08 | P1 | 资源泄漏 | mod_audio_fork.c | 连接失败时 bug 未移除 |
-| BUG-19 | P1 | 内存泄漏 | lws_glue.cpp | `fork_data_init`部分初始化失败时AudioPipe未释放 |
+| BUG-08 | P1 | 资源泄漏 | mod_audio_inject.c | 连接失败时 bug 未移除 |
+| BUG-19 | P1 | 内存泄漏 | lws_glue.cpp | `inject_data_init`部分初始化失败时AudioPipe未释放 |
 | BUG-09 | P2 | 竞态条件 | lws_glue.cpp | `pAudioPipe` TOCTOU 竞态 |
 | BUG-20 | P2 | 数据竞态 | audio_pipe.cpp | `addPendingDisconnect` 无锁写入 `m_state` |
 | BUG-21 | P2 | 空指针崩溃 | audio_pipe.cpp | `addPendingWrite`/`addPendingDisconnect` 访问可能为 null 的 `m_vhd` |

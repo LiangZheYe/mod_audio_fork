@@ -18,14 +18,14 @@ cmake .. \
   -DFREESWITCH_INCLUDE_DIR="/usr/local/freeswitch/include/freeswitch" \
   -DFREESWITCH_LIBRARY="/usr/local/freeswitch/lib/libfreeswitch.so"
 make -j$(nproc)
-sudo cp mod_audio_fork.so /usr/local/freeswitch/mod/
+sudo cp mod_audio_inject.so /usr/local/freeswitch/mod/
 ```
 
 Overridable env vars: `FREESWITCH_INCLUDE_DIR`, `FREESWITCH_LIBRARY`, `FREESWITCH_MOD_DIR`, `BUILD_TYPE`.
 
 Clean build: `rm -rf build/`
 
-No test suite exists. Verify manually: `fs_cli -x "module_exists mod_audio_fork"` or `ldd build/mod_audio_fork.so`.
+No test suite exists. Verify manually: `fs_cli -x "module_exists mod_audio_inject"` or `ldd build/mod_audio_inject.so`.
 
 ## Architecture
 
@@ -35,9 +35,9 @@ FreeSWITCH loadable module that streams call audio over WebSockets (L16/PCM) wit
 
 | File | Lang | Role |
 |------|------|------|
-| `mod_audio_fork.c` | C99 | FreeSWITCH module entry, API command dispatch, media bug callback routing |
-| `mod_audio_fork.h` | C99 | `private_t` struct, constants, event type enums |
-| `lws_glue.cpp` | C++11 | C/C++ bridge: audio capture (`fork_frame`), playback injection (`dub_speech_frame`), binary message processing, session lifecycle |
+| `mod_audio_inject.c` | C99 | FreeSWITCH module entry, API command dispatch, media bug callback routing |
+| `mod_audio_inject.h` | C99 | `private_t` struct, constants, event type enums |
+| `lws_glue.cpp` | C++11 | C/C++ bridge: audio capture (`inject_frame`), playback injection (`dub_speech_frame`), binary message processing, session lifecycle |
 | `audio_pipe.cpp/hpp` | C++11 | WebSocket transport: LWS callbacks, connection state machine, thread-safe audio buffers |
 | `vector_math.cpp/h` | C99 | SIMD audio ops (AVX2/SSE2/scalar): add, normalize, volume |
 
@@ -46,19 +46,19 @@ FreeSWITCH loadable module that streams call audio over WebSockets (L16/PCM) wit
 Three thread types interact, making thread safety the central concern:
 
 1. **FS Media threads** (per-session) — call `capture_callback` every 20ms for READ and WRITE_REPLACE events. Must return fast; no blocking I/O.
-2. **FS API thread** — handles `uuid_audio_fork` CLI/ESL commands. Uses `switch_core_session_locate`/`rwunlock` for safe session access.
+2. **FS API thread** — handles `uuid_audio_inject` CLI/ESL commands. Uses `switch_core_session_locate`/`rwunlock` for safe session access.
 3. **LWS service thread** (global singleton) — runs `lws_service()` event loop. All LWS API calls must happen here. Other threads communicate via pending-operation lists + `lws_cancel_service()`.
 
 ### Key Synchronization
 
-- `tech_pvt->mutex` (nested): protects `private_t` shared state and playout buffers. `fork_frame` uses `trylock` (non-blocking, drops frame on contention). `dub_speech_frame` uses blocking lock but holds it briefly (~3-15μs).
+- `tech_pvt->mutex` (nested): protects `private_t` shared state and playout buffers. `inject_frame` uses `trylock` (non-blocking, drops frame on contention). `dub_speech_frame` uses blocking lock but holds it briefly (~3-15μs).
 - `m_audio_mutex`: producer-consumer sync for uplink audio buffer between media thread (writer) and LWS thread (reader).
 - `m_state` (atomic): connection state machine, readable across threads without locks.
 - Pending-operation mutexes (`mutex_connects`, `mutex_disconnects`, `mutex_writes`): queue protection for cross-thread LWS requests.
 
 ### Data Flow
 
-**Uplink (call → server):** Media thread → `fork_frame()` → `switch_core_media_bug_read()` writes directly into AudioPipe's `m_audio_buffer` (zero-copy when no resampling) → `unlockAudioBuffer()` triggers `lws_cancel_service()` → LWS thread sends via `lws_write()`.
+**Uplink (call → server):** Media thread → `inject_frame()` → `switch_core_media_bug_read()` writes directly into AudioPipe's `m_audio_buffer` (zero-copy when no resampling) → `unlockAudioBuffer()` triggers `lws_cancel_service()` → LWS thread sends via `lws_write()`.
 
 **Downlink binary (server → call):** LWS thread receives → `processIncomingBinary()` → byte-alignment fixup → write to `streamingPreBuffer` (absorbs jitter, ~120ms threshold) → Speex resample if needed → lock `tech_pvt->mutex` → insert into `playoutBuffer`.
 
@@ -81,20 +81,20 @@ Three thread types interact, making thread safety the central concern:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `MOD_AUDIO_FORK_SUBPROTOCOL_NAME` | `audio.drachtio.org` | WebSocket sub-protocol |
-| `MOD_AUDIO_FORK_SERVICE_THREADS` | `1` | LWS service threads (1–5) |
-| `MOD_AUDIO_FORK_BUFFER_SECS` | `2` | Uplink audio buffer in seconds (1–5) |
-| `MOD_AUDIO_FORK_TCP_KEEPALIVE_SECS` | `55` | TCP keepalive interval |
-| `MOD_AUDIO_FORK_HTTP_AUTH_USER` | (empty) | Global HTTP Basic Auth username |
-| `MOD_AUDIO_FORK_HTTP_AUTH_PASSWORD` | (empty) | Global HTTP Basic Auth password |
+| `MOD_AUDIO_INJECT_SUBPROTOCOL_NAME` | `audio.drachtio.org` | WebSocket sub-protocol |
+| `MOD_AUDIO_INJECT_SERVICE_THREADS` | `1` | LWS service threads (1–5) |
+| `MOD_AUDIO_INJECT_BUFFER_SECS` | `2` | Uplink audio buffer in seconds (1–5) |
+| `MOD_AUDIO_INJECT_TCP_KEEPALIVE_SECS` | `55` | TCP keepalive interval |
+| `MOD_AUDIO_INJECT_HTTP_AUTH_USER` | (empty) | Global HTTP Basic Auth username |
+| `MOD_AUDIO_INJECT_HTTP_AUTH_PASSWORD` | (empty) | Global HTTP Basic Auth password |
 
 ### Per-Call Channel Variables
 
-`MOD_AUDIO_BASIC_AUTH_USERNAME`, `MOD_AUDIO_BASIC_AUTH_PASSWORD`, `MOD_AUDIO_FORK_ALLOW_SELFSIGNED`, `MOD_AUDIO_FORK_SKIP_SERVER_CERT_HOSTNAME_CHECK`, `MOD_AUDIO_FORK_ALLOW_EXPIRED`.
+`MOD_AUDIO_BASIC_AUTH_USERNAME`, `MOD_AUDIO_BASIC_AUTH_PASSWORD`, `MOD_AUDIO_INJECT_ALLOW_SELFSIGNED`, `MOD_AUDIO_INJECT_SKIP_SERVER_CERT_HOSTNAME_CHECK`, `MOD_AUDIO_INJECT_ALLOW_EXPIRED`.
 
 ## API Commands
 
-All via `uuid_audio_fork <uuid> <command> [args...]`:
+All via `uuid_audio_inject <uuid> <command> [args...]`:
 
 - `start <wss-url> <mix-type> <sampling-rate> [bugname] [bidir_enabled] [bidir_stream_enabled] [bidir_stream_samplerate]` — attach media bug, start streaming
 - `stop [bugname]` — close connection, detach bug
@@ -106,4 +106,4 @@ Mix types: `mono`, `mixed`, `stereo`. Sample rates: any multiple of 8000 (e.g. `
 
 ## Events
 
-Module fires these FreeSWITCH custom events: `mod_audio_fork::connect`, `connect_failed`, `disconnect`, `error`, `buffer_overrun`.
+Module fires these FreeSWITCH custom events: `mod_audio_inject::connect`, `connect_failed`, `disconnect`, `error`, `buffer_overrun`.

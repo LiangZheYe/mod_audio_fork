@@ -2,7 +2,7 @@
 set -e
 
 # ============================================================
-# build.sh - Build and install mod_audio_fork for FreeSWITCH
+# build.sh - Build and install mod_audio_inject for FreeSWITCH
 # ============================================================
 
 # Resolve script directory once (before any cd)
@@ -35,7 +35,7 @@ install_dependencies() {
 
 # ---- Build ----
 build() {
-    log_info "Building mod_audio_fork (${BUILD_TYPE})..."
+    log_info "Building mod_audio_inject (${BUILD_TYPE})..."
     log_info "  FreeSWITCH include: ${FREESWITCH_INCLUDE_DIR}"
     log_info "  FreeSWITCH library: ${FREESWITCH_LIBRARY}"
 
@@ -62,29 +62,29 @@ build() {
     # Build
     make -j"$(nproc)"
 
-    log_info "Build complete: ${SCRIPT_DIR}/build/mod_audio_fork.so"
+    log_info "Build complete: ${SCRIPT_DIR}/build/mod_audio_inject.so"
 }
 
 # ---- Install ----
 install_module() {
-    local so_file="${SCRIPT_DIR}/build/mod_audio_fork.so"
+    local so_file="${SCRIPT_DIR}/build/mod_audio_inject.so"
 
     # Try multiple locations in case of path resolution issues
     if [ ! -f "${so_file}" ]; then
         # Try relative to current directory
-        if [ -f "./build/mod_audio_fork.so" ]; then
-            so_file="./build/mod_audio_fork.so"
-        elif [ -f "./mod_audio_fork.so" ]; then
-            so_file="./mod_audio_fork.so"
+        if [ -f "./build/mod_audio_inject.so" ]; then
+            so_file="./build/mod_audio_inject.so"
+        elif [ -f "./mod_audio_inject.so" ]; then
+            so_file="./mod_audio_inject.so"
         else
             # Search for it
             local found
-            found="$(find "${SCRIPT_DIR}" -name 'mod_audio_fork.so' -type f 2>/dev/null | head -1)"
+            found="$(find "${SCRIPT_DIR}" -name 'mod_audio_inject.so' -type f 2>/dev/null | head -1)"
             if [ -n "${found}" ]; then
                 so_file="${found}"
             else
-                log_error "mod_audio_fork.so not found. Run build first."
-                log_error "  Searched: ${SCRIPT_DIR}/build/mod_audio_fork.so"
+                log_error "mod_audio_inject.so not found. Run build first."
+                log_error "  Searched: ${SCRIPT_DIR}/build/mod_audio_inject.so"
                 log_error "  SCRIPT_DIR=${SCRIPT_DIR}"
                 log_error "  PWD=$(pwd)"
                 ls -la "${SCRIPT_DIR}/build/" 2>/dev/null || true
@@ -95,7 +95,7 @@ install_module() {
 
     log_info "Installing ${so_file} to ${FREESWITCH_MOD_DIR}..."
     cp "${so_file}" "${FREESWITCH_MOD_DIR}/"
-    # chown freeswitch:freeswitch "${FREESWITCH_MOD_DIR}/mod_audio_fork.so"
+    # chown freeswitch:freeswitch "${FREESWITCH_MOD_DIR}/mod_audio_inject.so"
     log_info "Module installed successfully."
 }
 
@@ -105,8 +105,8 @@ usage() {
     echo ""
     echo "Commands:"
     echo "  deps      Install build dependencies (requires root)"
-    echo "  build     Configure and build mod_audio_fork"
-    echo "  install   Copy mod_audio_fork.so to FreeSWITCH modules dir (requires root)"
+    echo "  build     Configure and build mod_audio_inject"
+    echo "  install   Copy mod_audio_inject.so to FreeSWITCH modules dir (requires root)"
     echo "  all       Run deps + build + install (default)"
     echo ""
     echo "Environment variables:"

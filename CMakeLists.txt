@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.10)
-project(mod_audio_fork)
+project(mod_audio_inject)
 
 # Set C++ standard
 set(CMAKE_CXX_STANDARD 11)
@@ -118,18 +118,18 @@ if(NOT BOOST_INCLUDE_DIR)
 endif()
 
 # Set source files
-set(MOD_AUDIO_FORK_SOURCES
-    mod_audio_fork.c
+set(MOD_AUDIO_INJECT_SOURCES
+    mod_audio_inject.c
     lws_glue.cpp
     audio_pipe.cpp
     vector_math.cpp
 )
 
 # Create shared library
-add_library(mod_audio_fork SHARED ${MOD_AUDIO_FORK_SOURCES})
+add_library(mod_audio_inject SHARED ${MOD_AUDIO_INJECT_SOURCES})
 
 # Set include directories
-target_include_directories(mod_audio_fork PRIVATE
+target_include_directories(mod_audio_inject PRIVATE
     ${FREESWITCH_INCLUDE_DIR}
     ${LIBWEBSOCKETS_INCLUDE_DIRS}
     ${SPEEX_INCLUDE_DIRS}
@@ -139,14 +139,14 @@ target_include_directories(mod_audio_fork PRIVATE
 )
 
 # Set compile definitions
-target_compile_definitions(mod_audio_fork PRIVATE
-    MOD_AUDIO_FORK_BUILD
+target_compile_definitions(mod_audio_inject PRIVATE
+    MOD_AUDIO_INJECT_BUILD
     SWITCH_PACKAGE_VERSION="1.0.0"
     _GNU_SOURCE
 )
 
 # Set compile flags - Ubuntu 22.04 optimized
-target_compile_options(mod_audio_fork PRIVATE
+target_compile_options(mod_audio_inject PRIVATE
     $<$<CXX_COMPILER_ID:GNU>:-Wall -Wextra -fPIC -O2>
     $<$<CXX_COMPILER_ID:Clang>:-Wall -Wextra -fPIC -O2>
     $<$<C_COMPILER_ID:GNU>:-Wall -Wextra -fPIC -O2>
@@ -157,21 +157,21 @@ target_compile_options(mod_audio_fork PRIVATE
 include(CheckCXXCompilerFlag)
 check_cxx_compiler_flag("-mavx2" COMPILER_SUPPORTS_AVX2)
 if(COMPILER_SUPPORTS_AVX2)
-    target_compile_options(mod_audio_fork PRIVATE -mavx2)
-    target_compile_definitions(mod_audio_fork PRIVATE USE_AVX2)
+    target_compile_options(mod_audio_inject PRIVATE -mavx2)
+    target_compile_definitions(mod_audio_inject PRIVATE USE_AVX2)
     message(STATUS "Using AVX2 optimizations")
 else()
     # Check for SSE2 support
     check_cxx_compiler_flag("-msse2" COMPILER_SUPPORTS_SSE2)
     if(COMPILER_SUPPORTS_SSE2)
-        target_compile_options(mod_audio_fork PRIVATE -msse2)
-        target_compile_definitions(mod_audio_fork PRIVATE USE_SSE2)
+        target_compile_options(mod_audio_inject PRIVATE -msse2)
+        target_compile_definitions(mod_audio_inject PRIVATE USE_SSE2)
         message(STATUS "Using SSE2 optimizations")
     endif()
 endif()
 
 # Link libraries
-target_link_libraries(mod_audio_fork
+target_link_libraries(mod_audio_inject
     ${FREESWITCH_LIBRARY}
     ${LIBWEBSOCKETS_LIBRARIES}
     ${SPEEX_LIBRARIES}
@@ -183,7 +183,7 @@ target_link_libraries(mod_audio_fork
 )
 
 # Set link flags - Ubuntu 22.04 specific
-set_target_properties(mod_audio_fork PROPERTIES
+set_target_properties(mod_audio_inject PROPERTIES
     PREFIX ""
     SUFFIX ".so"
     BUILD_WITH_INSTALL_RPATH TRUE
@@ -191,19 +191,19 @@ set_target_properties(mod_audio_fork PROPERTIES
 )
 
 # Set linker flags correctly for FreeSWITCH module
-target_link_options(mod_audio_fork PRIVATE
+target_link_options(mod_audio_inject PRIVATE
     -Wl,-no-undefined
     -Wl,-shared
 )
 
 # Install target - Ubuntu 22.04 paths
-install(TARGETS mod_audio_fork
+install(TARGETS mod_audio_inject
     LIBRARY DESTINATION lib/freeswitch/mod
     PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ
 )
 
 # Print configuration info
-message(STATUS "=== mod_audio_fork Configuration ===")
+message(STATUS "=== mod_audio_inject Configuration ===")
 message(STATUS "FreeSWITCH include dir: ${FREESWITCH_INCLUDE_DIR}")
 message(STATUS "FreeSWITCH library: ${FREESWITCH_LIBRARY}")
 message(STATUS "libwebsockets: ${LIBWEBSOCKETS_LIBRARIES}")

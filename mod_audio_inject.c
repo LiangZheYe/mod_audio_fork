@@ -1,22 +1,22 @@
 /*
  *
- * mod_audio_fork.c -- Freeswitch module for forking audio to remote server over
+ * mod_audio_inject.c -- Freeswitch module for injecting audio to remote server over
  * websockets
  *
  */
-#include "mod_audio_fork.h"
+#include "mod_audio_inject.h"
 
 #include "lws_glue.h"
 
 // static int mod_running = 0;
 
-SWITCH_MODULE_SHUTDOWN_FUNCTION(mod_audio_fork_shutdown);
-SWITCH_MODULE_RUNTIME_FUNCTION(mod_audio_fork_runtime);
-SWITCH_MODULE_LOAD_FUNCTION(mod_audio_fork_load);
+SWITCH_MODULE_SHUTDOWN_FUNCTION(mod_audio_inject_shutdown);
+SWITCH_MODULE_RUNTIME_FUNCTION(mod_audio_inject_runtime);
+SWITCH_MODULE_LOAD_FUNCTION(mod_audio_inject_load);
 
-SWITCH_MODULE_DEFINITION(mod_audio_fork, mod_audio_fork_load,
-                         mod_audio_fork_shutdown,
-                         NULL /*mod_audio_fork_runtime*/);
+SWITCH_MODULE_DEFINITION(mod_audio_inject, mod_audio_inject_load,
+                         mod_audio_inject_shutdown,
+                         NULL /*mod_audio_inject_runtime*/);
 
 static void responseHandler(switch_core_session_t *session,
                             const char *eventName, char *json) {
@@ -52,11 +52,11 @@ static switch_bool_t capture_callback(switch_media_bug_t *bug, void *user_data,
       switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO,
                         "Got SWITCH_ABC_TYPE_CLOSE for bug %s\n",
                         tech_pvt->bugname);
-      fork_session_cleanup(session, tech_pvt->bugname, 1);
+      inject_session_cleanup(session, tech_pvt->bugname, 1);
     } break;
 
     case SWITCH_ABC_TYPE_READ:
-      ret = fork_frame(session, bug);
+      ret = inject_frame(session, bug);
       break;
 
     case SWITCH_ABC_TYPE_WRITE_REPLACE:
@@ -85,14 +85,14 @@ static switch_status_t start_capture(
   int channels = (flags & SMBF_STEREO) ? 2 : 1;
 
   switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO,
-                    "mod_audio_fork (%s): streaming %d sampling to %s path %s "
+                    "mod_audio_inject (%s): streaming %d sampling to %s path %s "
                     "port %d tls: %s bidirectional_audio_sample_rate: %d.\n",
                     bugname, sampling, host, path, port,
                     sslFlags ? "yes" : "no", bidirectional_audio_sample_rate);
 
   if (switch_channel_get_private(channel, bugname)) {
     switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
-                      "mod_audio_fork: bug %s already attached!\n", bugname);
+                      "mod_audio_inject: bug %s already attached!\n", bugname);
     return SWITCH_STATUS_FALSE;
   }
 
@@ -100,21 +100,21 @@ static switch_status_t start_capture(
 
   if (switch_channel_pre_answer(channel) != SWITCH_STATUS_SUCCESS) {
     switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
-                      "mod_audio_fork: channel must have reached pre-answer "
+                      "mod_audio_inject: channel must have reached pre-answer "
                       "status before calling start!\n");
     return SWITCH_STATUS_FALSE;
   }
 
   switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG,
-                    "calling fork_session_init.\n");
+                    "calling inject_session_init.\n");
   if (SWITCH_STATUS_FALSE ==
-      fork_session_init(session, responseHandler,
+      inject_session_init(session, responseHandler,
                         read_codec->implementation->actual_samples_per_second,
                         host, port, path, sampling, sslFlags, channels, bugname,
                         bidirectional_audio_enable, bidirectional_audio_stream,
                         bidirectional_audio_sample_rate, &pUserData)) {
     switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
-                      "Error initializing mod_audio_fork session.\n");
+                      "Error initializing mod_audio_inject session.\n");
     return SWITCH_STATUS_FALSE;
   }
 
@@ -129,10 +129,10 @@ static switch_status_t start_capture(
                     "setting bug private data %s.\n", bugname);
   switch_channel_set_private(channel, bugname, bug);
 
-  if (fork_session_connect(&pUserData) != SWITCH_STATUS_SUCCESS) {
+  if (inject_session_connect(&pUserData) != SWITCH_STATUS_SUCCESS) {
     /* BUG-08 fix: clean up bug and resources when connect fails */
     switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
-                      "Error mod_audio_fork session cannot connect.\n");
+                      "Error mod_audio_inject session cannot connect.\n");
     switch_channel_set_private(channel, bugname, NULL);
     switch_core_media_bug_remove(session, &bug);
     return SWITCH_STATUS_FALSE;
@@ -147,8 +147,8 @@ static switch_status_t do_stop(switch_core_session_t *session, char *bugname) {
   switch_status_t status = SWITCH_STATUS_SUCCESS;
 
   switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO,
-                    "mod_audio_fork (%s): stop\n", bugname);
-  status = fork_session_cleanup(session, bugname, 0);
+                    "mod_audio_inject (%s): stop\n", bugname);
+  status = inject_session_cleanup(session, bugname, 0);
 
   return status;
 }
@@ -158,9 +158,9 @@ static switch_status_t do_pauseresume(switch_core_session_t *session,
   switch_status_t status = SWITCH_STATUS_SUCCESS;
 
   switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO,
-                    "mod_audio_fork (%s): %s\n", bugname,
+                    "mod_audio_inject (%s): %s\n", bugname,
                     pause ? "pause" : "resume");
-  status = fork_session_pauseresume(session, bugname, pause);
+  status = inject_session_pauseresume(session, bugname, pause);
 
   return status;
 }
@@ -170,8 +170,8 @@ static switch_status_t stop_play(switch_core_session_t *session,
   switch_status_t status = SWITCH_STATUS_SUCCESS;
 
   switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO,
-                    "mod_audio_fork stop_play\n");
-  status = fork_session_stop_play(session, bugname);
+                    "mod_audio_inject stop_play\n");
+  status = inject_session_stop_play(session, bugname);
 
   return status;
 }
@@ -181,18 +181,18 @@ static switch_status_t do_graceful_shutdown(switch_core_session_t *session,
   switch_status_t status = SWITCH_STATUS_SUCCESS;
 
   switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO,
-                    "mod_audio_fork (%s): do_graceful_shutdown \n", bugname);
-  status = fork_session_graceful_shutdown(session, bugname);
+                    "mod_audio_inject (%s): do_graceful_shutdown \n", bugname);
+  status = inject_session_graceful_shutdown(session, bugname);
 
   return status;
 }
 
-#define FORK_API_SYNTAX                                                       \
+#define INJECT_API_SYNTAX                                                       \
   "<uuid> [start | stop | pause | resume | graceful-shutdown | stop_play ] "  \
   "[wss-url | path] [mono | mixed | stereo] [8000 | 16000 | 24000 | 32000 | " \
   "64000] [bugname] [bidirectionalAudio_enabled] "                            \
   "[bidirectionalAudio_stream_enabled] [bidirectionalAudio_stream_samplerate]"
-SWITCH_STANDARD_API(fork_function) {
+SWITCH_STANDARD_API(inject_function) {
   char *mycmd = NULL, *argv[10] = {0};
   int argc = 0;
   switch_status_t status = SWITCH_STATUS_FALSE;
@@ -204,13 +204,13 @@ SWITCH_STANDARD_API(fork_function) {
   }
   if (!zstr(cmd)) {
     switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG,
-                      "mod_audio_fork cmd: %s\n", cmd);
+                      "mod_audio_inject cmd: %s\n", cmd);
   }
 
   if (zstr(cmd) || argc < 2 || (0 == strcmp(argv[1], "start") && argc < 4)) {
     switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
                       "Error with command %s %s %s.\n", cmd, argv[0], argv[1]);
-    stream->write_function(stream, "-USAGE: %s\n", FORK_API_SYNTAX);
+    stream->write_function(stream, "-USAGE: %s\n", INJECT_API_SYNTAX);
     goto done;
   } else {
     switch_core_session_t *lsession = NULL;
@@ -292,7 +292,7 @@ SWITCH_STANDARD_API(fork_function) {
                                bidirectional_audio_sample_rate, bugname);
       } else {
         switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
-                          "unsupported mod_audio_fork cmd: %s\n", argv[1]);
+                          "unsupported mod_audio_inject cmd: %s\n", argv[1]);
       }
       switch_core_session_rwunlock(lsession);
     } else {
@@ -313,11 +313,11 @@ done:
   return SWITCH_STATUS_SUCCESS;
 }
 
-SWITCH_MODULE_LOAD_FUNCTION(mod_audio_fork_load) {
+SWITCH_MODULE_LOAD_FUNCTION(mod_audio_inject_load) {
   switch_api_interface_t *api_interface;
 
   switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE,
-                    "mod_audio_fork API loading..\n");
+                    "mod_audio_inject API loading..\n");
 
   /* connect my internal structure to the blank pointer passed to me */
   *module_interface =
@@ -329,18 +329,18 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_audio_fork_load) {
           SWITCH_STATUS_SUCCESS) {
     switch_log_printf(
         SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR,
-        "Couldn't register an event subclass for mod_audio_fork API.\n");
+        "Couldn't register an event subclass for mod_audio_inject API.\n");
     return SWITCH_STATUS_TERM;
   }
-  SWITCH_ADD_API(api_interface, "uuid_audio_fork", "audio_fork API",
-                 fork_function, FORK_API_SYNTAX);
-  switch_console_set_complete("add uuid_audio_fork start wss-url");
-  switch_console_set_complete("add uuid_audio_fork stop");
+  SWITCH_ADD_API(api_interface, "uuid_audio_inject", "audio_inject API",
+                 inject_function, INJECT_API_SYNTAX);
+  switch_console_set_complete("add uuid_audio_inject start wss-url");
+  switch_console_set_complete("add uuid_audio_inject stop");
 
-  fork_init();
+  inject_init();
 
   switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE,
-                    "mod_audio_fork API successfully loaded\n");
+                    "mod_audio_inject API successfully loaded\n");
 
   /* indicate that the module should continue to be loaded */
   // mod_running = 1;
@@ -349,9 +349,9 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_audio_fork_load) {
 
 /*
   Called when the system shuts down
-  Macro expands to: switch_status_t mod_audio_fork_shutdown() */
-SWITCH_MODULE_SHUTDOWN_FUNCTION(mod_audio_fork_shutdown) {
-  fork_cleanup();
+  Macro expands to: switch_status_t mod_audio_inject_shutdown() */
+SWITCH_MODULE_SHUTDOWN_FUNCTION(mod_audio_inject_shutdown) {
+  inject_cleanup();
   // mod_running = 0;
   switch_event_free_subclass(EVENT_DISCONNECT);
   switch_event_free_subclass(EVENT_ERROR);
@@ -362,12 +362,12 @@ SWITCH_MODULE_SHUTDOWN_FUNCTION(mod_audio_fork_shutdown) {
 /*
   If it exists, this is called in it's own thread when the module-load completes
   If it returns anything but SWITCH_STATUS_TERM it will be called again
-  automatically Macro expands to: switch_status_t mod_audio_fork_runtime()
+  automatically Macro expands to: switch_status_t mod_audio_inject_runtime()
 */
 /*
-SWITCH_MODULE_RUNTIME_FUNCTION(mod_audio_fork_runtime)
+SWITCH_MODULE_RUNTIME_FUNCTION(mod_audio_inject_runtime)
 {
-  fork_service_threads(&mod_running);
+  inject_service_threads(&mod_running);
         return SWITCH_STATUS_TERM;
 }
 */

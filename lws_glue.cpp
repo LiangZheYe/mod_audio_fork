@@ -12,7 +12,7 @@
 #include <thread>
 
 #include "audio_pipe.hpp"
-#include "mod_audio_fork.h"
+#include "mod_audio_inject.h"
 #include "vector_math.h"
 
 typedef boost::circular_buffer<uint16_t> CircularBuffer_t;
@@ -24,14 +24,14 @@ typedef boost::circular_buffer<uint16_t> CircularBuffer_t;
 
 namespace {
 static const char *requestedBufferSecs =
-    std::getenv("MOD_AUDIO_FORK_BUFFER_SECS");
+    std::getenv("MOD_AUDIO_INJECT_BUFFER_SECS");
 static int nAudioBufferSecs = std::max(
     1, std::min(requestedBufferSecs ? ::atoi(requestedBufferSecs) : 2, 5));
 static const char *requestedNumServiceThreads =
-    std::getenv("MOD_AUDIO_FORK_SERVICE_THREADS");
+    std::getenv("MOD_AUDIO_INJECT_SERVICE_THREADS");
 static const char *mySubProtocolName =
-    std::getenv("MOD_AUDIO_FORK_SUBPROTOCOL_NAME")
-        ? std::getenv("MOD_AUDIO_FORK_SUBPROTOCOL_NAME")
+    std::getenv("MOD_AUDIO_INJECT_SUBPROTOCOL_NAME")
+        ? std::getenv("MOD_AUDIO_INJECT_SUBPROTOCOL_NAME")
         : "audio.drachtio.org";
 static unsigned int nServiceThreads __attribute__((unused)) = std::max(
     1, std::min(
@@ -258,7 +258,7 @@ static void eventCallback(const char *sessionId, const char *bugname,
     switch_core_session_rwunlock(session);
   }
 }
-switch_status_t fork_data_init(private_t *tech_pvt,
+switch_status_t inject_data_init(private_t *tech_pvt,
                                switch_core_session_t *session, char *host,
                                unsigned int port, char *path, int sslFlags,
                                int sampling, int desiredSampling, int channels,
@@ -383,7 +383,7 @@ switch_status_t fork_data_init(private_t *tech_pvt,
   }
 
   switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG,
-                    "(%u) fork_data_init\n", tech_pvt->id);
+                    "(%u) inject_data_init\n", tech_pvt->id);
 
   return SWITCH_STATUS_SUCCESS;
 }
@@ -458,19 +458,19 @@ int parse_ws_uri(switch_channel_t *channel, const char *szServerUri, char *host,
   int flags = LCCSCF_USE_SSL;
 
   if (switch_true(switch_channel_get_variable(
-          channel, "MOD_AUDIO_FORK_ALLOW_SELFSIGNED"))) {
+          channel, "MOD_AUDIO_INJECT_ALLOW_SELFSIGNED"))) {
     switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG,
                       "parse_ws_uri - allowing self-signed certs\n");
     flags |= LCCSCF_ALLOW_SELFSIGNED;
   }
   if (switch_true(switch_channel_get_variable(
-          channel, "MOD_AUDIO_FORK_SKIP_SERVER_CERT_HOSTNAME_CHECK"))) {
+          channel, "MOD_AUDIO_INJECT_SKIP_SERVER_CERT_HOSTNAME_CHECK"))) {
     switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG,
                       "parse_ws_uri - skipping hostname check\n");
     flags |= LCCSCF_SKIP_SERVER_CERT_HOSTNAME_CHECK;
   }
   if (switch_true(switch_channel_get_variable(
-          channel, "MOD_AUDIO_FORK_ALLOW_EXPIRED"))) {
+          channel, "MOD_AUDIO_INJECT_ALLOW_EXPIRED"))) {
     switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG,
                       "parse_ws_uri - allowing expired certs\n");
     flags |= LCCSCF_ALLOW_EXPIRED;
@@ -546,12 +546,12 @@ int parse_ws_uri(switch_channel_t *channel, const char *szServerUri, char *host,
   return 1;
 }
 
-switch_status_t fork_init() {
+switch_status_t inject_init() {
   switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE,
-                    "mod_audio_fork: audio buffer (in secs):    %d secs\n",
+                    "mod_audio_inject: audio buffer (in secs):    %d secs\n",
                     nAudioBufferSecs);
   switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE,
-                    "mod_audio_fork: sub-protocol:              %s\n",
+                    "mod_audio_inject: sub-protocol:              %s\n",
                     mySubProtocolName);
 
   // int logs = LLL_ERR | LLL_WARN | LLL_NOTICE | LLL_INFO | LLL_PARSER |
@@ -559,25 +559,25 @@ switch_status_t fork_init() {
   int logs = LLL_ERR | LLL_WARN | LLL_NOTICE;
   drachtio::AudioPipe::initialize(mySubProtocolName, logs, lws_logger);
   switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE,
-                    "mod_audio_fork successfully initialized\n");
+                    "mod_audio_inject successfully initialized\n");
   return SWITCH_STATUS_SUCCESS;
 }
 
-switch_status_t fork_cleanup() {
+switch_status_t inject_cleanup() {
   bool cleanup = false;
   switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE,
-                    "mod_audio_fork unloading..\n");
+                    "mod_audio_inject unloading..\n");
 
   cleanup = drachtio::AudioPipe::deinitialize();
   switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE,
-                    "mod_audio_fork unloaded status %d\n", cleanup);
+                    "mod_audio_inject unloaded status %d\n", cleanup);
   if (cleanup == true) {
     return SWITCH_STATUS_SUCCESS;
   }
   return SWITCH_STATUS_FALSE;
 }
 
-switch_status_t fork_session_init(
+switch_status_t inject_session_init(
     switch_core_session_t *session, responseHandler_t responseHandler,
     uint32_t samples_per_second, char *host, unsigned int port, char *path,
     int sampling, int sslFlags, int channels, char *bugname,
@@ -593,7 +593,7 @@ switch_status_t fork_session_init(
   }
 
   if (SWITCH_STATUS_SUCCESS !=
-      fork_data_init(tech_pvt, session, host, port, path, sslFlags,
+      inject_data_init(tech_pvt, session, host, port, path, sslFlags,
                      samples_per_second, sampling, channels, bugname,
                      bidirectional_audio_enable, bidirectional_audio_stream,
                      bidirectional_audio_sample_rate, responseHandler)) {
@@ -605,7 +605,7 @@ switch_status_t fork_session_init(
   return SWITCH_STATUS_SUCCESS;
 }
 
-switch_status_t fork_session_connect(void **ppUserData) {
+switch_status_t inject_session_connect(void **ppUserData) {
   private_t *tech_pvt = static_cast<private_t *>(*ppUserData);
   drachtio::AudioPipe *pAudioPipe =
       static_cast<drachtio::AudioPipe *>(tech_pvt->pAudioPipe);
@@ -613,14 +613,14 @@ switch_status_t fork_session_connect(void **ppUserData) {
   return SWITCH_STATUS_SUCCESS;
 }
 
-switch_status_t fork_session_cleanup(switch_core_session_t *session,
+switch_status_t inject_session_cleanup(switch_core_session_t *session,
                                      char *bugname, int channelIsClosing) {
   switch_channel_t *channel = switch_core_session_get_channel(session);
   switch_media_bug_t *bug =
       (switch_media_bug_t *)switch_channel_get_private(channel, bugname);
   if (!bug) {
     switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG,
-                      "fork_session_cleanup: no bug %s - websocket conection "
+                      "inject_session_cleanup: no bug %s - websocket conection "
                       "already closed\n",
                       bugname);
     return SWITCH_STATUS_FALSE;
@@ -632,7 +632,7 @@ switch_status_t fork_session_cleanup(switch_core_session_t *session,
   uint32_t id = tech_pvt->id;
 
   switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG,
-                    "(%u) fork_session_cleanup\n", id);
+                    "(%u) inject_session_cleanup\n", id);
 
   // BUG-09 fix: read pAudioPipe after acquiring the mutex to prevent TOCTOU
   // race
@@ -666,18 +666,18 @@ switch_status_t fork_session_cleanup(switch_core_session_t *session,
   switch_mutex_unlock(tech_pvt->mutex);
   destroy_tech_pvt(tech_pvt);
   switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO,
-                    "(%u) fork_session_cleanup: connection closed\n", id);
+                    "(%u) inject_session_cleanup: connection closed\n", id);
   return SWITCH_STATUS_SUCCESS;
 }
 
-switch_status_t fork_session_pauseresume(switch_core_session_t *session,
+switch_status_t inject_session_pauseresume(switch_core_session_t *session,
                                          char *bugname, int pause) {
   switch_channel_t *channel = switch_core_session_get_channel(session);
   switch_media_bug_t *bug =
       (switch_media_bug_t *)switch_channel_get_private(channel, bugname);
   if (!bug) {
     switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
-                      "fork_session_pauseresume failed because no bug\n");
+                      "inject_session_pauseresume failed because no bug\n");
     return SWITCH_STATUS_FALSE;
   }
   private_t *tech_pvt = (private_t *)switch_core_media_bug_get_user_data(bug);
@@ -689,14 +689,14 @@ switch_status_t fork_session_pauseresume(switch_core_session_t *session,
   return SWITCH_STATUS_SUCCESS;
 }
 
-switch_status_t fork_session_graceful_shutdown(switch_core_session_t *session,
+switch_status_t inject_session_graceful_shutdown(switch_core_session_t *session,
                                                char *bugname) {
   switch_channel_t *channel = switch_core_session_get_channel(session);
   switch_media_bug_t *bug =
       (switch_media_bug_t *)switch_channel_get_private(channel, bugname);
   if (!bug) {
     switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
-                      "fork_session_graceful_shutdown failed because no bug\n");
+                      "inject_session_graceful_shutdown failed because no bug\n");
     return SWITCH_STATUS_FALSE;
   }
   private_t *tech_pvt = (private_t *)switch_core_media_bug_get_user_data(bug);
@@ -712,7 +712,7 @@ switch_status_t fork_session_graceful_shutdown(switch_core_session_t *session,
   return SWITCH_STATUS_SUCCESS;
 }
 
-switch_bool_t fork_frame(switch_core_session_t *session,
+switch_bool_t inject_frame(switch_core_session_t *session,
                          switch_media_bug_t *bug) {
   private_t *tech_pvt = (private_t *)switch_core_media_bug_get_user_data(bug);
 
@@ -867,14 +867,14 @@ switch_bool_t dub_speech_frame(switch_media_bug_t *bug, private_t *tech_pvt) {
   return SWITCH_TRUE;
 }
 
-switch_status_t fork_session_stop_play(switch_core_session_t *session,
+switch_status_t inject_session_stop_play(switch_core_session_t *session,
                                        char *bugname) {
   switch_channel_t *channel = switch_core_session_get_channel(session);
   switch_media_bug_t *bug =
       (switch_media_bug_t *)switch_channel_get_private(channel, bugname);
   if (!bug) {
     switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
-                      "fork_session_stop_play failed because no bug\n");
+                      "inject_session_stop_play failed because no bug\n");
     return SWITCH_STATUS_FALSE;
   }
   private_t *tech_pvt = (private_t *)switch_core_media_bug_get_user_data(bug);
