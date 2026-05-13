@@ -1,12 +1,11 @@
 # mod_audio_inject
 
-A FreeSWITCH module that attaches a media bug to a channel and streams L16 audio via WebSockets to a remote server. This module supports **bidirectional audio** — receiving audio back from the server for real-time playback to the caller, enabling full-fledged IVR, dialog, and voice-bot applications.
+A FreeSWITCH module that attaches a media bug to a channel and streams L16 audio via WebSockets to a remote server. This module supports **bidirectional audio** — receiving audio back from the server via binary WebSocket frames for real-time playback to the caller, enabling full-fledged IVR, dialog, and voice-bot applications.
 
 ## Features
 
 - **Bidirectional Audio** — Stream audio to a WebSocket server and receive audio back for real-time playback
-- **Binary Audio Streaming** — Receive raw binary audio frames from the server (in addition to base64-encoded JSON)
-- **Audio Markers** — Synchronize audio playback with named markers (`mark` / `clearMarks`)
+- **Binary Audio Streaming** — Receive raw binary audio frames from the server for low-latency downlink
 - **Multiple Mix Types** — Mono (caller only), mixed (caller + callee), or stereo (separate channels)
 - **Flexible Sample Rates** — 8000, 16000, 24000, 32000, 48000, 64000 Hz (any multiple of 8000)
 - **Automatic Resampling** — Built-in Speex resampler for sample rate conversion
@@ -45,7 +44,7 @@ uuid_audio_inject <uuid> <command> [arguments...]
 #### start
 
 ```
-uuid_audio_inject <uuid> start <wss-url> <mix-type> <sampling-rate> [bugname] [metadata] [bidirectionalAudio_enabled] [bidirectionalAudio_stream_enabled] [bidirectionalAudio_stream_samplerate]
+uuid_audio_inject <uuid> start <wss-url> <mix-type> <sampling-rate> [bugname] [bidirectionalAudio_enabled] [bidirectionalAudio_stream_enabled] [bidirectionalAudio_stream_samplerate]
 ```
 
 Attaches a media bug and starts streaming audio to the WebSocket server.
@@ -57,7 +56,6 @@ Attaches a media bug and starts streaming audio to the WebSocket server.
 | `mix-type` | `mono` (caller only), `mixed` (caller + callee), or `stereo` (separate channels) |
 | `sampling-rate` | `8k`, `16k`, or any integer multiple of 8000 (e.g. `24000`, `32000`, `64000`) |
 | `bugname` | Optional bug name for multiple concurrent forks (default: `audio_inject`) |
-| `metadata` | Optional JSON metadata sent as a text frame immediately after connecting |
 | `bidirectionalAudio_enabled` | `true` or `false` — enable receiving audio from server (default: `true`) |
 | `bidirectionalAudio_stream_enabled` | `true` or `false` — enable binary audio streaming from server |
 | `bidirectionalAudio_stream_samplerate` | Sample rate of incoming audio from server (e.g. `8000`, `16000`) |
@@ -65,18 +63,10 @@ Attaches a media bug and starts streaming audio to the WebSocket server.
 #### stop
 
 ```
-uuid_audio_inject <uuid> stop [bugname] [metadata]
+uuid_audio_inject <uuid> stop [bugname]
 ```
 
-Closes the WebSocket connection and detaches the media bug. Optionally sends a final text frame before closing.
-
-#### send_text
-
-```
-uuid_audio_inject <uuid> send_text [bugname] <text>
-```
-
-Sends a text frame to the remote server (e.g. DTMF events, control messages).
+Closes the WebSocket connection and detaches the media bug.
 
 #### pause
 
@@ -118,99 +108,16 @@ The module generates the following FreeSWITCH custom events:
 |---|---|
 | `mod_audio_inject::connect` | WebSocket connection established successfully |
 | `mod_audio_inject::connect_failed` | WebSocket connection failed (body contains reason) |
-| `mod_audio_inject::disconnect` | WebSocket connection closed or server sent disconnect |
+| `mod_audio_inject::disconnect` | WebSocket connection closed |
+| `mod_audio_inject::error` | Error reported |
 | `mod_audio_inject::buffer_overrun` | Audio buffer overrun — frames are being dropped |
-| `mod_audio_inject::transcription` | Server sent a transcription message |
-| `mod_audio_inject::transfer` | Server sent a transfer request |
-| `mod_audio_inject::play_audio` | Server sent audio for playback |
-| `mod_audio_inject::kill_audio` | Server requested to stop current audio playback |
-| `mod_audio_inject::error` | Server reported an error |
-| `mod_audio_inject::json` | Server sent a generic JSON message |
 
-### Server-to-Module Messages
+### Binary Audio Streaming
 
-The server can send JSON text frames to control the module:
-
-#### playAudio
-Play audio back to the caller (when using base64-encoded JSON mode):
-```json
-{
-  "type": "playAudio",
-  "data": {
-    "audioContentType": "raw",
-    "sampleRate": 8000,
-    "audioContent": "<base64-encoded raw audio>"
-  }
-}
-```
-
-#### killAudio
-Stop current audio playback and clear buffers:
-```json
-{
-  "type": "killAudio"
-}
-```
-
-#### mark
-Add a named marker for audio synchronization:
-```json
-{
-  "type": "mark",
-  "data": {
-    "name": "marker-name"
-  }
-}
-```
-When the marker is reached during playout, the module sends a mark event back to the server. Maximum 30 markers can be queued.
-
-#### clearMarks
-Clear all pending markers:
-```json
-{
-  "type": "clearMarks"
-}
-```
-
-#### transcription
-```json
-{
-  "type": "transcription",
-  "data": { ... }
-}
-```
-
-#### transfer
-```json
-{
-  "type": "transfer",
-  "data": { ... }
-}
-```
-
-#### disconnect
-```json
-{
-  "type": "disconnect",
-  "data": { ... }
-}
-```
-
-#### error
-```json
-{
-  "type": "error",
-  "data": { ... }
-}
-```
-
-#### Binary Audio Streaming
-
-When `bidirectionalAudio_stream_enabled` is set to `true`, the server can send raw binary audio frames directly over the WebSocket (instead of base64-encoded JSON). This is more efficient for real-time audio streaming. The module handles:
+When `bidirectionalAudio_stream_enabled` is set to `true`, the server sends raw binary audio frames directly over the WebSocket. The module handles:
 
 - Automatic resampling if the server's sample rate differs from the channel's rate
 - Pre-buffering to smooth out network jitter
-- Audio marker interleaving for synchronization
 
 ## Building
 
@@ -233,10 +140,7 @@ sudo ./build.sh install    # Install to FreeSWITCH
 
 ```bash
 # Start streaming with bidirectional audio
-fs_cli -x "uuid_audio_inject <uuid> start wss://your-server.com/audio mixed 16k mybug {} true true 16000"
-
-# Send a text message
-fs_cli -x "uuid_audio_inject <uuid> send_text mybug {\"event\":\"dtmf\",\"digit\":\"1\"}"
+fs_cli -x "uuid_audio_inject <uuid> start wss://your-server.com/audio mixed 16k mybug true true 16000"
 
 # Pause streaming
 fs_cli -x "uuid_audio_inject <uuid> pause mybug"
@@ -244,8 +148,11 @@ fs_cli -x "uuid_audio_inject <uuid> pause mybug"
 # Resume streaming
 fs_cli -x "uuid_audio_inject <uuid> resume mybug"
 
-# Stop with final message
-fs_cli -x "uuid_audio_inject <uuid> stop mybug {\"reason\":\"complete\"}"
+# Stop playback
+fs_cli -x "uuid_audio_inject <uuid> stop_play mybug"
+
+# Stop streaming
+fs_cli -x "uuid_audio_inject <uuid> stop mybug"
 ```
 
 ## License
