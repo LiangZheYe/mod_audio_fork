@@ -300,12 +300,12 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_audio_fork_load)
 	*module_interface = switch_loadable_module_create_module_interface(pool, modname);
 
 	/* create/register custom event message types */
-    switch_event_reserve_subclass(EVENT_ERROR) != SWITCH_STATUS_SUCCESS ||
-    switch_event_reserve_subclass(EVENT_DISCONNECT) != SWITCH_STATUS_SUCCESS) {
-	switch_console_set_complete("add uuid_audio_fork start wss-url");
-		return SWITCH_STATUS_TERM;
-	}
+		if (switch_event_reserve_subclass(EVENT_ERROR) != SWITCH_STATUS_SUCCESS ||
+	    switch_event_reserve_subclass(EVENT_DISCONNECT) != SWITCH_STATUS_SUCCESS) {
 
+			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Couldn't register an event subclass for mod_audio_fork API.\n");
+			return SWITCH_STATUS_TERM;
+		}
 	SWITCH_ADD_API(api_interface, "uuid_audio_fork", "audio_fork API", fork_function, FORK_API_SYNTAX);
 	switch_console_set_complete("add uuid_audio_fork start wss-url");
 	switch_console_set_complete("add uuid_audio_fork stop");
