@@ -1,0 +1,13 @@
+{
+  "name": "mod-audio-inject-ws-test-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "WebSocket test servers for mod_audio_inject stability and concurrency tests",
+  "scripts": {
+    "uplink": "node ws_test_server.js",
+    "bidir": "node ws_bidir_server.js"
+  },
+  "dependencies": {
+    "ws": "^8.0.0"
+  }
+}

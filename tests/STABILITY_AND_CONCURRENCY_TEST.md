@@ -1,5 +1,25 @@
 # mod_audio_inject 稳定性与并发测试方案
 
+## 目录结构
+
+```
+tests/
+├── STABILITY_AND_CONCURRENCY_TEST.md   # 本文档
+├── ws_server/                          # WebSocket 测试服务端
+│   ├── package.json
+│   ├── ws_test_server.js               # Node.js 上行接收服务端
+│   ├── ws_test_server.py               # Python 上行接收服务端
+│   └── ws_bidir_server.js              # Node.js 双向音频服务端
+└── scripts/                            # 测试脚本
+    ├── soak_monitor.sh                 # 长时间运行监控
+    ├── concurrent_test.sh              # 多路并发测试
+    ├── staircase_test.sh               # 阶梯加压测试
+    ├── flash_test.sh                   # 快速启停测试
+    ├── cross_operation_test.sh         # 交叉操作测试
+    ├── resource_monitor.sh             # 资源监控（CSV输出）
+    └── leak_detector.sh               # 连接泄漏检测
+```
+
 ## 前提条件
 
 - FreeSWITCH 已安装并运行，mod_audio_inject 已加载
@@ -20,102 +40,32 @@ fs_cli -x "module_list" | grep audio_inject
 fs_cli -x "status"
 ```
 
-### 测试用 WebSocket 服务端
+### 启动测试用 WebSocket 服务端
 
-需要一个简单的 WebSocket 服务端来配合测试。推荐方案：
+测试前需先启动 WS Server，提供两种实现：
 
-**方案 A：使用 Node.js 快速搭建**
-
-```javascript
-// ws_test_server.js
-const WebSocket = require('ws');
-const server = new WebSocket.Server({ port: 8080 });
-
-server.on('connection', (ws, req) => {
-  console.log(`[CONNECT] ${new Date().toISOString()} from ${req.socket.remoteAddress}`);
-
-  ws.on('message', (data) => {
-    // 上行音频接收 - 仅统计，不回放
-  });
-
-  ws.on('close', () => {
-    console.log(`[DISCONNECT] ${new Date().toISOString()}`);
-  });
-
-  ws.on('error', (err) => {
-    console.error(`[ERROR] ${err.message}`);
-  });
-
-  // 可选：发送下行音频（PCM 16bit 8kHz）
-  // const silence = Buffer.alloc(320, 0); // 20ms silence
-  // setInterval(() => ws.send(silence), 20);
-});
-
-console.log('WebSocket test server listening on port 8080');
-```
+**Node.js 版（推荐）**：
 
 ```bash
-npm install ws
+cd tests/ws_server
+npm install
+# 仅接收上行音频
 node ws_test_server.js
+# 或双向音频（需准备 test_audio.pcm 文件）
+node ws_bidir_server.js
 ```
 
-**方案 B：使用 Python**
+**Python 版**：
 
-```python
-# ws_test_server.py
-import asyncio
-import websockets
-from datetime import datetime
-
-async def handle(ws, path):
-    print(f"[CONNECT] {datetime.now().isoformat()}")
-    try:
-        async for message in ws:
-            pass  # 接收上行音频
-    except websockets.exceptions.ConnectionClosed:
-        pass
-    finally:
-        print(f"[DISCONNECT] {datetime.now().isoformat()}")
-
-asyncio.run(websockets.serve(handle, "0.0.0.0", 8080))
+```bash
+pip install websockets
+cd tests/ws_server
+python ws_test_server.py
 ```
 
-**带下行音频注入的测试服务端**（用于测试双向音频）：
-
-```javascript
-// ws_bidir_server.js
-const WebSocket = require('ws');
-const fs = require('fs');
-
-const server = new WebSocket.Server({ port: 8080 });
-
-server.on('connection', (ws) => {
-  console.log(`[CONNECT] ${new Date().toISOString()}`);
-
-  // 发送 WAV 文件中的 PCM 数据作为下行音频
-  // 假设 8kHz 16bit mono WAV
-  const audioData = fs.readFileSync('test_audio.pcm');
-  let offset = 0;
-  const frameSize = 320; // 20ms @ 8kHz 16bit = 320 bytes
-
-  const interval = setInterval(() => {
-    if (ws.readyState === WebSocket.OPEN) {
-      const chunk = audioData.slice(offset, offset + frameSize);
-      if (chunk.length < frameSize) {
-        offset = 0; // 循环播放
-      } else {
-        ws.send(chunk);
-      }
-      offset += frameSize;
-    }
-  }, 20);
-
-  ws.on('close', () => {
-    clearInterval(interval);
-    console.log(`[DISCONNECT] ${new Date().toISOString()}`);
-  });
-});
-```
+`ws_bidir_server.js` 支持环境变量配置：
+- `WS_PORT` — 监听端口（默认 8080）
+- `AUDIO_FILE` — 下行音频 PCM 文件路径（默认 `test_audio.pcm`）
 
 ---
 
@@ -167,31 +117,12 @@ fs_cli -x "uuid_audio_inject <UUID> start ws://127.0.0.1:8080 stereo 16k"
 # 持续运行 12-24 小时
 ```
 
-**监控脚本**：
+**使用监控脚本**：
 
 ```bash
-#!/bin/bash
-# monitor.sh - 每 60 秒采集一次内存和连接状态
-
-UUID=$1
-LOG_FILE="soak_test_$(date +%Y%m%d_%H%M%S).log"
-
-while true; do
-  TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
-
-  # FreeSWITCH 进程内存
-  FS_MEM=$(ps -o rss= -p $(pgrep freeswitch) | awk '{printf "%.1f MB", $1/1024}')
-
-  # 模块级 session 计数（通过日志间接判断）
-  ACTIVE=$(fs_cli -x "uuid_dump $UUID" 2>/dev/null | grep -c "audio_inject" || echo "0")
-
-  # WebSocket 连接数
-  WS_CONNS=$(ss -tnp | grep 8080 | wc -l)
-
-  echo "$TIMESTAMP | FS_MEM: $FS_MEM | WS_CONNS: $WS_CONNS | Active: $ACTIVE" >> "$LOG_FILE"
-
-  sleep 60
-done
+./scripts/soak_monitor.sh <UUID> [WS_PORT]
+# 输出示例：
+# 2026-05-14 10:00:00 | FS_MEM: 245.3 MB | WS_CONNS: 1 | Active: 1
 ```
 
 **检查项**：
@@ -353,47 +284,10 @@ fs_cli -x "uuid_transfer $UUID user/1002"
 
 **目标**：验证多路通话同时使用 mod_audio_inject 的稳定性。
 
-**批量发起脚本**：
-
 ```bash
-#!/bin/bash
-# concurrent_test.sh
-# 用法: ./concurrent_test.sh <并发数> <WS_URL>
-
-CONCURRENT=${1:-10}
-WS_URL=${2:-"ws://127.0.0.1:8080"}
-LOG_PREFIX="concurrent_test_$(date +%Y%m%d_%H%M%S)"
-
-echo "Starting $CONCURRENT concurrent sessions..."
-
-UUIDS=()
-
-# 批量建立通话并启动流
-for i in $(seq 1 $CONCURRENT); do
-  RESULT=$(fs_cli -x "originate user/1001 &park" 2>/dev/null)
-  UUID=$(echo "$RESULT" | grep -oP '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -1)
-
-  if [ -n "$UUID" ]; then
-    fs_cli -x "uuid_audio_inject $UUID start $WS_URL mono 8k" > /dev/null 2>&1
-    UUIDS+=("$UUID")
-    echo "[$i/$CONCURRENT] Started session $UUID"
-  else
-    echo "[$i/$CONCURRENT] FAILED to create session"
-  fi
-done
-
-echo "Active sessions: ${#UUIDS[@]}"
-echo "Waiting 60 seconds..."
-sleep 60
-
-# 批量停止
-echo "Stopping all sessions..."
-for UUID in "${UUIDS[@]}"; do
-  fs_cli -x "uuid_audio_inject $UUID stop" > /dev/null 2>&1
-  fs_cli -x "uuid_kill $UUID" > /dev/null 2>&1
-done
-
-echo "All sessions stopped."
+./scripts/concurrent_test.sh <并发数> <WS_URL>
+# 示例：
+./scripts/concurrent_test.sh 10 ws://127.0.0.1:8080
 ```
 
 **检查项**：
@@ -408,63 +302,12 @@ echo "All sessions stopped."
 **目标**：逐步增加并发数，找到稳定上限。
 
 ```bash
-#!/bin/bash
-# staircase_test.sh
-
-WS_URL="ws://127.0.0.1:8080"
-LEVELS=(10 25 50 100 200)
-HOLD_SECS=120
-
-for LEVEL in "${LEVELS[@]}"; do
-  echo "=== Level: $LEVEL concurrent sessions ==="
-  UUIDS=()
-
-  # 启动
-  for i in $(seq 1 $LEVEL); do
-    RESULT=$(fs_cli -x "originate user/1001 &park" 2>/dev/null)
-    UUID=$(echo "$RESULT" | grep -oP '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -1)
-    if [ -n "$UUID" ]; then
-      fs_cli -x "uuid_audio_inject $UUID start $WS_URL mono 8k" > /dev/null 2>&1
-      UUIDS+=("$UUID")
-    fi
-  done
-
-  SUCCESS=${#UUIDS[@]}
-  echo "Successfully started: $SUCCESS / $LEVEL"
-
-  # 采集资源
-  FS_MEM=$(ps -o rss= -p $(pgrep freeswitch) | awk '{printf "%.1f MB", $1/1024}')
-  WS_CONNS=$(ss -tnp | grep 8080 | wc -l)
-  echo "FS Memory: $FS_MEM | WS Connections: $WS_CONNS"
-
-  # 保持运行
-  sleep $HOLD_SECS
-
-  # 检查存活
-  ALIVE=0
-  for UUID in "${UUIDS[@]}"; do
-    EXISTS=$(fs_cli -x "uuid_exists $UUID" 2>/dev/null | tr -d '[:space:]')
-    if [ "$EXISTS" = "true" ]; then
-      ALIVE=$((ALIVE + 1))
-    fi
-  done
-  echo "Alive after ${HOLD_SECS}s: $ALIVE / $SUCCESS"
-
-  # 清理
-  for UUID in "${UUIDS[@]}"; do
-    fs_cli -x "uuid_audio_inject $UUID stop" > /dev/null 2>&1
-    fs_cli -x "uuid_kill $UUID" > /dev/null 2>&1
-  done
-
-  # 等待资源释放
-  sleep 30
-
-  # 检查内存回落
-  FS_MEM_AFTER=$(ps -o rss= -p $(pgrep freeswitch) | awk '{printf "%.1f MB", $1/1024}')
-  echo "FS Memory after cleanup: $FS_MEM_AFTER"
-  echo ""
-done
+./scripts/staircase_test.sh [WS_URL]
+# 默认阶梯: 10, 25, 50, 100, 200 路
+# 每级保持 120 秒
 ```
+
+脚本会自动采集每级的成功数、内存、WS 连接数、存活率，以及清理后的内存回落情况。
 
 **检查项**：
 - [ ] 记录每级并发下的成功率和存活率
@@ -477,29 +320,16 @@ done
 **目标**：验证快速建立和断开连接不导致资源泄漏或崩溃。
 
 ```bash
-#!/bin/bash
-# flash_test.sh - 快速启停循环
-
-WS_URL="ws://127.0.0.1:8080"
-ITERATIONS=200
-
+# 先建立通话
 fs_cli -x "originate user/1001 &park"
-UUID=<UUID>
+UUID=<返回的UUID>
 
-for i in $(seq 1 $ITERATIONS); do
-  fs_cli -x "uuid_audio_inject $UUID start $WS_URL mono 8k" > /dev/null 2>&1
-  # 不等连接建立就立即 stop
-  fs_cli -x "uuid_audio_inject $UUID stop" > /dev/null 2>&1
-  if (( i % 20 == 0 )); then
-    FS_MEM=$(ps -o rss= -p $(pgrep freeswitch) | awk '{printf "%.1f MB", $1/1024}')
-    echo "Iteration $i | FS Memory: $FS_MEM"
-  fi
-done
-
-fs_cli -x "uuid_kill $UUID"
+./scripts/flash_test.sh <UUID> [WS_URL] [ITERATIONS]
+# 示例：
+./scripts/flash_test.sh $UUID ws://127.0.0.1:8080 200
 ```
 
-**变体：带间隔的快速启停**
+**变体：带间隔的快速启停**：
 
 ```bash
 # 等待连接建立后再 stop
@@ -552,57 +382,12 @@ fs_cli -x "uuid_audio_inject $UUID start ws://127.0.0.1:8080 mono 8k bug1"
 **目标**：验证并发流下执行通话操作（转移、保持、挂断）的稳定性。
 
 ```bash
-#!/bin/bash
-# cross_operation_test.sh
-
-WS_URL="ws://127.0.0.1:8080"
-CONCURRENT=20
-
-# 启动并发通话
-UUIDS=()
-for i in $(seq 1 $CONCURRENT); do
-  RESULT=$(fs_cli -x "originate user/1001 &park" 2>/dev/null)
-  UUID=$(echo "$RESULT" | grep -oP '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -1)
-  if [ -n "$UUID" ]; then
-    fs_cli -x "uuid_audio_inject $UUID start $WS_URL mono 8k" > /dev/null 2>&1
-    UUIDS+=("$UUID")
-  fi
-done
-
-echo "Started ${#UUIDS[@]} sessions. Running cross operations..."
-
-# 交叉操作
-for UUID in "${UUIDS[@]}"; do
-  OP=$(( RANDOM % 4 ))
-  case $OP in
-    0) # pause/resume
-      fs_cli -x "uuid_audio_inject $UUID pause" > /dev/null 2>&1
-      sleep 2
-      fs_cli -x "uuid_audio_inject $UUID resume" > /dev/null 2>&1
-      ;;
-    1) # stop + restart
-      fs_cli -x "uuid_audio_inject $UUID stop" > /dev/null 2>&1
-      sleep 1
-      fs_cli -x "uuid_audio_inject $UUID start $WS_URL mono 8k" > /dev/null 2>&1
-      ;;
-    2) # graceful-shutdown
-      fs_cli -x "uuid_audio_inject $UUID graceful-shutdown" > /dev/null 2>&1
-      ;;
-    3) # 直接挂断
-      fs_cli -x "uuid_kill $UUID" > /dev/null 2>&1
-      ;;
-  esac
-done
-
-# 清理残留
-sleep 5
-for UUID in "${UUIDS[@]}"; do
-  fs_cli -x "uuid_audio_inject $UUID stop" > /dev/null 2>&1
-  fs_cli -x "uuid_kill $UUID" > /dev/null 2>&1
-done
-
-echo "Cross operation test done."
+./scripts/cross_operation_test.sh [CONCURRENT] [WS_URL]
+# 示例：
+./scripts/cross_operation_test.sh 20 ws://127.0.0.1:8080
 ```
+
+脚本会对每个 session 随机执行 pause/resume、stop+restart、graceful-shutdown 或 kill 操作。
 
 ---
 
@@ -757,29 +542,15 @@ fs_cli -x "event json CUSTOM" &
 fs_cli | grep --line-buffered "mod_audio_inject"
 ```
 
-### 5.2 资源监控脚本
+### 5.2 资源监控
 
 ```bash
-#!/bin/bash
-# resource_monitor.sh - 持续监控 FreeSWITCH 资源使用
-
-PID=$(pgrep freeswitch)
-INTERVAL=10
-
-echo "timestamp,rss_mb,cpu_pct,ws_conns,fds,threads" > resource_log.csv
-
-while true; do
-  TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
-  RSS=$(ps -o rss= -p $PID | awk '{printf "%.1f", $1/1024}')
-  CPU=$(ps -o %cpu= -p $PID | tr -d ' ')
-  WS_CONNS=$(ss -tnp | grep 8080 | wc -l)
-  FDS=$(ls /proc/$PID/fd 2>/dev/null | wc -l)
-  THREADS=$(ls /proc/$PID/task 2>/dev/null | wc -l)
-
-  echo "$TIMESTAMP,$RSS,$CPU,$WS_CONNS,$FDS,$THREADS" >> resource_log.csv
-  sleep $INTERVAL
-done
+./scripts/resource_monitor.sh [WS_PORT] [INTERVAL]
+# 示例：每 10 秒采集一次，输出到 resource_log.csv
+./scripts/resource_monitor.sh 8080 10
 ```
+
+输出 CSV 格式：`timestamp,rss_mb,cpu_pct,ws_conns,fds,threads`
 
 ### 5.3 关键日志过滤
 
@@ -794,19 +565,9 @@ tail -f /usr/local/freeswitch/log/freeswitch.log | grep --line-buffered "mod_aud
 ### 5.4 连接泄漏检测
 
 ```bash
-#!/bin/bash
-# leak_detector.sh - 检测 WebSocket 连接泄漏
-
-EXPECTED=0  # 预期的活跃连接数
-
-while true; do
-  ACTUAL=$(ss -tnp | grep 8080 | wc -l)
-  if [ "$ACTUAL" -gt "$EXPECTED" ]; then
-    echo "$(date): LEAK DETECTED - $ACTUAL connections (expected $EXPECTED)"
-    ss -tnp | grep 8080
-  fi
-  sleep 30
-done
+./scripts/leak_detector.sh [WS_PORT] [EXPECTED_MAX]
+# 示例：检测 8080 端口，超过 0 个连接即报警
+./scripts/leak_detector.sh 8080 0
 ```
 
 ---
