@@ -26,13 +26,17 @@ server.on('connection', (ws) => {
 
   const interval = setInterval(() => {
     if (ws.readyState === WebSocket.OPEN) {
-      const chunk = audioData.slice(offset, offset + frameSize);
-      if (chunk.length < frameSize) {
-        offset = 0;
+      const remaining = audioData.length - offset;
+      if (remaining >= frameSize) {
+        ws.send(audioData.slice(offset, offset + frameSize));
+        offset += frameSize;
       } else {
-        ws.send(chunk);
+        // 末尾不足一帧，拼凑后从头补齐，保持循环无缝
+        const tail = audioData.slice(offset);
+        const head = audioData.slice(0, frameSize - remaining);
+        ws.send(Buffer.concat([tail, head]));
+        offset = frameSize - remaining;
       }
-      offset += frameSize;
     }
   }, 20);
 
